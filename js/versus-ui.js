@@ -289,11 +289,17 @@
       </div>`;
     }).join("");
 
-    // 방장만 "대기실로" 버튼 활성, 참가자는 안내
+    // 방장: 모두 대기실로 / 참가자: 나만 대기실로
     const againBtn = $("#vs-again-btn");
+    const note = $("#vs-result-note");
     if (againBtn) {
-      if (Versus.isHost()) { againBtn.style.display = ""; againBtn.textContent = "대기실로 돌아가기"; }
-      else { againBtn.style.display = "none"; }
+      againBtn.style.display = "";
+      againBtn.textContent = "대기실로 돌아가기";
+    }
+    if (note) {
+      note.textContent = Versus.isHost()
+        ? "‘대기실로 돌아가기’를 누르면 모두 함께 대기실로 이동해요."
+        : "‘대기실로 돌아가기’를 누르면 나만 대기실로 돌아가요. 방장이 다시 시작할 수 있어요.";
     }
     showScreen("#vs-result-screen");
     document.body.classList.remove("at-end");
@@ -391,7 +397,8 @@
     // 방장이 대기실로 복귀 신호 → 모두 대기실로
     Versus.onBackToLobby(() => { backToLobbyUI(); });
     $("#vs-again-btn")?.addEventListener("click", async () => {
-      if (Versus.isHost()) { await Versus.backToLobby(); }
+      if (Versus.isHost()) { await Versus.backToLobby(); }  // 방장: 모두 복귀
+      else { backToLobbyUI(); }                              // 참가자: 나만 복귀
     });
     $("#vs-code-input")?.addEventListener("keydown", e => { if (e.key === "Enter") doJoin(); });
     // 코드 입력은 자동 대문자

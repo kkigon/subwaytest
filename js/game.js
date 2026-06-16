@@ -210,14 +210,44 @@ function startVersusGame(config) {
   document.body.classList.add("in-game", "versus-mode");
   document.body.classList.remove("at-home", "at-end", "studying", "endless-mode");
 
-  setTimeout(() => {
+  // 게임 화면은 즉시 띄우되(지도 보임), 입력은 막고 3초 카운트다운 후 첫 문제 시작
+  SubwayMap.setInteractive(false);
+  $("#answer-input").disabled = true;
+  runVersusCountdown(() => {
+    if (!State.playing) return;
     showQuestionByIndex(0);
     State.endAt = performance.now() + State.versusDuration * 1000;
     tickTimer();
     SubwayMap.setInteractive(true);
+    $("#answer-input").disabled = false;
     $("#answer-input").focus();
     if (typeof window.onVersusScoreUpdate === "function") window.onVersusScoreUpdate();
-  }, 700);
+  });
+}
+
+// 화면 중앙 3-2-1-시작! 카운트다운 후 콜백. 모두가 game_start 받고 각자 실행 → 거의 동시 시작.
+function runVersusCountdown(done) {
+  const box = $("#vs-countdown");
+  const num = $("#vs-countdown-num");
+  if (!box || !num) { setTimeout(done, 100); return; }
+  box.classList.add("show");
+  const steps = ["3", "2", "1", "시작!"];
+  let i = 0;
+  const tick = () => {
+    const label = steps[i];
+    num.textContent = label;
+    num.classList.toggle("go", label === "시작!");
+    // 애니메이션 재시작 트릭
+    num.style.animation = "none"; void num.offsetWidth; num.style.animation = "";
+    try { Sound.play(label === "시작!" ? "correct" : "wrong"); } catch (e) {}
+    i++;
+    if (i < steps.length) {
+      setTimeout(tick, 800);
+    } else {
+      setTimeout(() => { box.classList.remove("show"); done(); }, 650);
+    }
+  };
+  tick();
 }
 
 // 특정 인덱스의 문제를 화면에 표시 (대전 모드 공용)
