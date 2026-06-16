@@ -29,6 +29,11 @@ const State = {
   // ----- 대전 모드 -----
   versus: false,         // 대전 모드로 진행 중인지
   versusDuration: 60,    // 대전 제한시간(초)
+  vsOrder: [],           // 공유 문제 순서(역 키 배열)
+  vsIndex: 0,            // 현재 문제 번호(모두 공유)
+  vsLocked: false,       // 현재 문제를 누가 이미 맞혔는지(잠금)
+  vsScores: {},          // id -> 점수
+  vsAnsweredWrong: false,// 이번 문제에서 내가 이미 틀렸는지(중복 오답 방지용 표시)
 };
 
 /* ---------------- 사운드 ---------------- */
@@ -170,7 +175,7 @@ function shuffle(arr) {
 function startVersusGame(config) {
   State.region = config.region || "seoul";
   State.mode = config.mode || "all";
-  State.playMode = config.playMode || "timed";
+  State.playMode = "timed";        // 대전은 항상 시간제한 모드
   State.versus = true;
   State.versusDuration = config.duration || 60;
 
@@ -181,8 +186,11 @@ function startVersusGame(config) {
   const validKeys = new Set(State.network.quizStations.keys());
   let order = Array.isArray(config.order) ? config.order.filter(k => validKeys.has(k)) : null;
   if (!order || order.length === 0) order = shuffle([...validKeys]);
-  // nextQuestion이 pool.pop()으로 뒤에서 꺼내므로, 0번이 먼저 나오도록 뒤집어 넣는다
-  State.pool = order.slice().reverse();
+  State.vsOrder = order;
+  State.vsIndex = 0;
+  State.vsLocked = false;
+  State.vsScores = {};
+  State.vsAnsweredWrong = false;
 
   State.score = 0;
   State.hintsLeft = HINTS_PER_GAME;
@@ -198,21 +206,53 @@ function startVersusGame(config) {
   document.body.classList.remove("in-versus");
   document.querySelectorAll(".vs-screen").forEach(s => s.classList.remove("show"));
 
-  document.body.classList.add("in-game");
-  document.body.classList.remove("at-home", "at-end", "studying");
-  document.body.classList.toggle("endless-mode", State.playMode === "endless");
+  document.body.classList.add("in-game", "versus-mode");
+  document.body.classList.remove("at-home", "at-end", "studying", "endless-mode");
 
   setTimeout(() => {
-    nextQuestion();
-    if (State.playMode === "timed") {
-      State.endAt = performance.now() + State.versusDuration * 1000;
-      tickTimer();
-    } else {
-      State.endAt = Infinity;
-    }
+    showQuestionByIndex(0);
+    State.endAt = performance.now() + State.versusDuration * 1000;
+    tickTimer();
     SubwayMap.setInteractive(true);
     $("#answer-input").focus();
   }, 700);
+}
+
+// 특정 인덱스의 문제를 화면에 표시 (대전 모드 공용)
+function showQuestionByIndex(i) {
+  if (!State.playing) return;
+  if (i >= State.vsOrder.length) { endGame(); return; }
+  State.vsIndex = i;
+  State.vsLocked = false;
+  State.vsAnsweredWrong = false;
+  State.current = State.vsOrder[i];
+  State.awaitingNext = false;
+  renderCurrentQuestion();
+  const input = $("#answer-input");
+  input.value = "";
+  input.disabled = false;
+  input.focus();
+}
+
+// State.current 역으로 문제 UI(배지/문구/포커스)를 그린다 — nextQuestion과 공용 로직
+function renderCurrentQuestion() {
+  const st = State.network.stations.get(State.current);
+  SubwayMap.focusStation(State.current);
+  const badges = $("#question-lines");
+  badges.innerHTML = "";
+  const lineIds = ALL_STATION_LINES.get(State.current) || st.lines;
+  for (const id of lineIds) {
+    const line = lineById(id);
+    const chip = document.createElement("span");
+    chip.className = "line-chip";
+    chip.style.setProperty("--c", line.color);
+    chip.style.setProperty("--t", line.darkText ? "#23262b" : "#fff");
+    chip.textContent = line.badge;
+    badges.appendChild(chip);
+  }
+  $("#question-text").textContent = lineIds.length > 1 ? "이 환승역의 이름은?" : "이 역의 이름은?";
+  $("#hint-display").classList.remove("show");
+  clearSuggestions();
 }
 
 // 대전용 문제 순서 생성(방장이 호출). 주어진 노선으로 네트워크를 만들어 역 키를 섞는다.
@@ -222,6 +262,66 @@ function buildVersusOrder(region, lineIds) {
   const net = buildNetwork(lineIds, { displayLineIds: lineIds });
   State.region = prevRegion;
   return shuffle([...net.quizStations.keys()]);
+}
+
+/* ---------------- 대전: 정답 제출 / 선착순 처리 ---------------- */
+// 내가 답을 제출 (대전 모드)
+function submitVersusAnswer() {
+  if (!State.playing || State.vsLocked || State.awaitingNext || !State.current) return;
+  const input = $("#answer-input");
+  const value = input.value.trim();
+  if (!value) return;
+  const st = State.network.stations.get(State.current);
+  const correct = matchesAnswer(value, st.name);
+
+  if (!correct) {
+    // 오답: 나만 피드백, 계속 도전 가능(잠그지 않음)
+    Sound.play("wrong");
+    popFeedback("❌ 다시!", "no");
+    input.select();
+    return;
+  }
+
+  // 정답! 내가 최초인지 확정은 broadcast로 — 우선 모두에게 알림
+  // (같은 문제에 대한 첫 vs_correct만 채택되고 나머지는 무시됨)
+  if (typeof window.onVersusCorrect === "function") {
+    window.onVersusCorrect({ index: State.vsIndex, station: State.current });
+  }
+}
+
+// 누군가의 정답이 확정됐을 때(자신 포함) — versus-ui에서 broadcast 수신 후 호출
+// winner: {id, name}, index: 문제번호
+function versusApplyCorrect(winner, index) {
+  if (!State.playing) return;
+  if (index !== State.vsIndex) return;   // 지난 문제에 대한 신호면 무시
+  if (State.vsLocked) return;            // 이미 처리됨(두 번째 정답 무시)
+  State.vsLocked = true;
+  State.awaitingNext = true;
+
+  const input = $("#answer-input");
+  input.disabled = true;
+  clearSuggestions();
+
+  // 점수 집계
+  State.vsScores[winner.id] = (State.vsScores[winner.id] || 0) + 1;
+  // 내 점수 표시(상단 score)는 내가 맞혔을 때만 증가
+  const myVsId = (typeof Versus !== "undefined" && Versus.myId) ? Versus.myId() : null;
+  if (winner.id === myVsId) {
+    State.score = State.vsScores[winner.id];
+    $("#score").textContent = State.score;
+  }
+
+  const st = State.network.stations.get(State.current);
+  SubwayMap.revealLabel(State.current, true);
+  Sound.play("correct");
+  popFeedback(`⭕ ${winner.name} 정답! 「${st.name}」`, "ok");
+
+  // 다음 문제로(모두 같은 인덱스로). 방장 여부와 무관하게 각자 같은 다음 인덱스 표시.
+  const remain = State.endAt - performance.now();
+  setTimeout(() => {
+    if (remain <= 0) { endGame(); return; }
+    showQuestionByIndex(index + 1);
+  }, REVEAL_DELAY);
 }
 
 /* ---------------- 타이머 ---------------- */
@@ -279,6 +379,8 @@ function nextQuestion() {
 
 /* ---------------- 정답 처리 ---------------- */
 function submitAnswer() {
+  // 대전 모드면 선착순 경쟁 로직으로
+  if (State.versus) { submitVersusAnswer(); return; }
   if (!State.playing || State.awaitingNext || !State.current) return;
   const input = $("#answer-input");
   const value = input.value.trim();
@@ -666,6 +768,7 @@ document.addEventListener("DOMContentLoaded", () => {
 window.VersusGame = {
   start: startVersusGame,      // 모두가 호출: 같은 config로 게임 시작
   buildOrder: buildVersusOrder, // 방장이 호출: 문제 순서 생성
+  applyCorrect: versusApplyCorrect, // 정답 확정 시(자신 포함) 호출
   // 노선 범위(core/all/custom)와 지역으로 실제 출제 노선 id 배열을 계산
   resolveLineIds(region, mode, customLines) {
     const lines = LINES.filter(l => (l.region || "seoul") === region);
@@ -677,4 +780,5 @@ window.VersusGame = {
     return lines.map(l => l.id); // all (부산은 core 없음 → all)
   },
   isVersus: () => State.versus,
+  currentIndex: () => State.vsIndex,
 };

@@ -315,6 +315,10 @@
         window.VersusGame.start(cfg);
       }
     });
+    // 게임(game.js)에서 내가 정답을 맞히면 호출 → 모두에게 선착순 정답 알림
+    window.onVersusCorrect = (info) => {
+      try { Versus.sendCorrect(info.index); } catch (e) {}
+    };
     $("#vs-code-input")?.addEventListener("keydown", e => { if (e.key === "Enter") doJoin(); });
     // 코드 입력은 자동 대문자
     $("#vs-code-input")?.addEventListener("input", e => {

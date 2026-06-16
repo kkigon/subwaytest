@@ -189,6 +189,10 @@ const Versus = (() => {
     channel.on("broadcast", { event: "game_start" }, ({ payload }) => {
       if (payload) startGameFromSignal(payload);
     });
+    // 선착순 정답: 같은 문제(index)에 대한 첫 vs_correct만 채택
+    channel.on("broadcast", { event: "vs_correct" }, ({ payload }) => {
+      if (payload) applyVsCorrect(payload);
+    });
 
     Room.channel = channel;
     await new Promise((resolve) => {
@@ -316,11 +320,13 @@ const Versus = (() => {
   // 게임 시작 신호 수신 시 모두가 실행 (방장 자신도 self:true로 받음)
   const gameStartListeners = [];
   let lastStartedAt = 0;
+  let vsHandledIndex = -1;   // 이미 처리한(정답자 확정된) 문제 번호
   function onGameStart(fn) { gameStartListeners.push(fn); }
   function startGameFromSignal(payload) {
     // 같은 시작 신호를 중복 처리하지 않도록 startedAt으로 디듀프
     if (payload && payload.startedAt && payload.startedAt === lastStartedAt) return;
     if (payload && payload.startedAt) lastStartedAt = payload.startedAt;
+    vsHandledIndex = -1;   // 새 게임이므로 정답 처리 기록 초기화
     if (Room.data) Room.data.status = "playing";
     gameStartListeners.forEach(fn => { try { fn(payload); } catch (e) {} });
   }
@@ -352,6 +358,24 @@ const Versus = (() => {
     // 혹시 broadcast 자기수신이 안 되는 경우 대비, 직접도 한 번
     startGameFromSignal(payload);
     return { ok: true };
+  }
+
+  /* ---------- 선착순 정답 ---------- */
+  // 내가 정답을 맞혔을 때(게임에서 호출): 모두에게 알림
+  function sendCorrect(index) {
+    const payload = { index, winnerId: myId(), winnerName: Room.myName, t: Date.now() };
+    if (Room.channel) { try { Room.channel.send({ type: "broadcast", event: "vs_correct", payload }); } catch (e) {} }
+    // self:true라 내 핸들러로도 들어오지만, 혹시 몰라 직접도 한 번
+    applyVsCorrect(payload);
+  }
+  // 정답 신호 수신: 같은 문제(index)에 대한 첫 신호만 채택
+  function applyVsCorrect(payload) {
+    if (!payload || typeof payload.index !== "number") return;
+    if (payload.index <= vsHandledIndex) return;   // 이미 처리한 문제 → 무시(두 번째 정답 무시)
+    vsHandledIndex = payload.index;
+    if (window.VersusGame && typeof window.VersusGame.applyCorrect === "function") {
+      window.VersusGame.applyCorrect({ id: payload.winnerId, name: payload.winnerName }, payload.index);
+    }
   }
 
   /* ---------- 수동 위임 ---------- */
@@ -397,7 +421,7 @@ const Versus = (() => {
     Room,
     makeCode, guestName, resolveMyName, myThemeLine, inviteLink, myId,
     createRoom, joinRoom, leaveRoom, transferHost, quickLeave, retrack,
-    updateSettings, startGame, onGameStart,
+    updateSettings, startGame, onGameStart, sendCorrect,
     onPlayersChange, onHostChange, getPlayers: () => Room.players,
     isHost, getHostId,
   };
