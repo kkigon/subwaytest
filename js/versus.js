@@ -25,6 +25,11 @@ const Versus = (() => {
   function onPlayersChange(fn) { playerListeners.push(fn); }
   function notifyPlayers() { playerListeners.forEach(fn => { try { fn(Room.players); } catch (e) {} }); }
 
+  // 방장 권한 변경 시 UI 갱신 콜백들
+  const hostListeners = [];
+  function onHostChange(fn) { hostListeners.push(fn); }
+  function notifyHost() { hostListeners.forEach(fn => { try { fn(Room.isHost); } catch (e) {} }); }
+
   function client() { return Account.getClient ? Account.getClient() : null; }
 
   // 이 브라우저 세션의 고유 id (게스트도 자기 자신을 식별하기 위함)
@@ -104,15 +109,8 @@ const Versus = (() => {
     // 기존 채널 정리
     if (Room.channel) { try { await c.removeChannel(Room.channel); } catch (e) {} Room.channel = null; }
 
-    const me = {
-      id: myId(),
-      name: Room.myName,
-      themeLine: myThemeLine(),
-      isHost: !!Room.isHost,
-    };
-
     const channel = c.channel("room:" + Room.code, {
-      config: { presence: { key: me.id } },
+      config: { presence: { key: myId() } },
     });
 
     // presence 동기화: 전체 목록이 바뀔 때마다
@@ -120,14 +118,29 @@ const Versus = (() => {
       Room.players = buildPlayers(channel.presenceState());
       notifyPlayers();
     });
-    // (join/leave도 sync를 유발하므로 위 핸들러로 충분하지만, 명시적으로 둬도 무방)
+
+    // 방장 변경 브로드캐스트 수신
+    channel.on("broadcast", { event: "host_changed" }, ({ payload }) => {
+      const newHostId = payload && payload.newHostId;
+      Room.data = Room.data || {};
+      Room.data.host_id = newHostId;
+      Room.data.host_name = payload && payload.newHostName;
+      const amHost = (newHostId === myId());
+      if (amHost !== Room.isHost) {
+        Room.isHost = amHost;
+        // 내 presence의 isHost 값을 갱신해 모두에게 반영
+        if (Room.channel) { try { Room.channel.track(myMeta()); } catch (e) {} }
+      }
+      notifyHost();      // 역할 변경을 UI에 알림
+      notifyPlayers();
+    });
 
     Room.channel = channel;
 
     await new Promise((resolve) => {
       channel.subscribe(async (status) => {
         if (status === "SUBSCRIBED") {
-          await channel.track(me);   // 내 존재를 방에 알림
+          await channel.track(myMeta());   // 내 존재를 방에 알림
           resolve(true);
         }
       });
@@ -135,6 +148,16 @@ const Versus = (() => {
       setTimeout(() => resolve(false), 4000);
     });
     return true;
+  }
+
+  // 내 presence 메타데이터
+  function myMeta() {
+    return {
+      id: myId(),
+      name: Room.myName,
+      themeLine: myThemeLine(),
+      isHost: !!Room.isHost,
+    };
   }
 
   // 채널에서 나가기(untrack + 구독 해제)
@@ -203,21 +226,81 @@ const Versus = (() => {
     return { ok: true, code };
   }
 
+  /* ---------- 방장 위임 ---------- */
+  // 지정한 참가자에게 방장 권한을 넘긴다.
+  async function transferHost(newHostId) {
+    const c = client();
+    if (!c || !Room.code || !Room.isHost) return { ok: false };
+    const target = Room.players.find(p => p.id === newHostId);
+    if (!target) return { ok: false };
+
+    // 1) rooms 테이블의 방장 정보 갱신(영구 기록)
+    try {
+      await c.from("rooms").update({ host_id: newHostId, host_name: target.name }).eq("code", Room.code);
+    } catch (e) { /* 업데이트 실패해도 브로드캐스트는 시도 */ }
+
+    // 2) 모두에게 방장 변경 알림
+    if (Room.channel) {
+      try {
+        await Room.channel.send({
+          type: "broadcast",
+          event: "host_changed",
+          payload: { newHostId, newHostName: target.name },
+        });
+      } catch (e) {}
+    }
+
+    // 3) 내 상태도 즉시 갱신 (브로드캐스트는 보낸 사람 자신에겐 안 올 수 있음)
+    Room.isHost = (newHostId === myId());
+    Room.data = Room.data || {};
+    Room.data.host_id = newHostId; Room.data.host_name = target.name;
+    try { if (Room.channel) await Room.channel.track(myMeta()); } catch (e) {}
+    notifyHost(); notifyPlayers();
+    return { ok: true };
+  }
+
   /* ---------- 방 나가기 ---------- */
   async function leaveRoom() {
     const c = client();
-    await disconnectChannel();   // 실시간 채널에서 먼저 빠짐
-    // 방장이 나가면 방 삭제(이 단계 한정 간단 처리). 참가자면 그냥 떠남.
+
+    // 방장이 나가는데 다른 참가자가 있으면 → 방장 위임 후 떠남
     if (c && Room.code && Room.isHost) {
-      await c.from("rooms").delete().eq("code", Room.code);
+      const others = Room.players.filter(p => p.id !== myId());
+      if (others.length > 0) {
+        const next = others[0];   // 남은 참가자 중 첫 명에게 위임
+        try {
+          await c.from("rooms").update({ host_id: next.id, host_name: next.name }).eq("code", Room.code);
+        } catch (e) {}
+        if (Room.channel) {
+          try {
+            await Room.channel.send({
+              type: "broadcast",
+              event: "host_changed",
+              payload: { newHostId: next.id, newHostName: next.name },
+            });
+          } catch (e) {}
+        }
+        // 위임 메시지가 전달될 짧은 여유
+        await new Promise(r => setTimeout(r, 150));
+        await disconnectChannel();
+      } else {
+        // 혼자였으면 방 삭제
+        await disconnectChannel();
+        try { await c.from("rooms").delete().eq("code", Room.code); } catch (e) {}
+      }
+    } else {
+      // 참가자가 나가는 경우: 그냥 떠남
+      await disconnectChannel();
     }
+
     Room.code = null; Room.isHost = false; Room.data = null; Room.players = [];
   }
 
   return {
     Room,
     makeCode, guestName, resolveMyName, myThemeLine, inviteLink, myId,
-    createRoom, joinRoom, leaveRoom,
-    onPlayersChange, getPlayers: () => Room.players,
+    createRoom, joinRoom, leaveRoom, transferHost,
+    onPlayersChange, onHostChange, getPlayers: () => Room.players,
+    isHost: () => Room.isHost,
   };
 })();

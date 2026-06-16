@@ -75,8 +75,13 @@
   // 참가자 한 명을 닉네임 태그로
   function playerTag(pl) {
     const color = lineColor(pl.themeLine);
+    const isMe = (pl.id === Versus.myId());
     const crown = pl.isHost ? `<span class="vs-crown" title="방장">👑</span>` : "";
-    const meMark = (pl.id === Versus.myId()) ? `<span class="vs-me">나</span>` : "";
+    const meMark = isMe ? `<span class="vs-me">나</span>` : "";
+    // 내가 방장이고, 상대가 내가 아니면 → 방장 위임 버튼 표시
+    const giveBtn = (Versus.isHost() && !isMe && !pl.isHost)
+      ? `<button class="vs-give-host" type="button" data-give="${escapeHtml(pl.id)}" title="방장 넘기기">👑 위임</button>`
+      : "";
     return `<div class="vs-player">
       ${crown}
       <span class="nick-tag static" style="--theme:${color}">
@@ -84,6 +89,7 @@
         <span class="nick-text">${escapeHtml(pl.name)}</span>
       </span>
       ${meMark}
+      ${giveBtn}
     </div>`;
   }
 
@@ -98,6 +104,30 @@
     box.innerHTML =
       `<div class="vs-players-count">현재 ${count}명 접속 중</div>` +
       `<div class="vs-players-list">${players.map(playerTag).join("")}</div>`;
+
+    // 방장 위임 버튼 연결
+    box.querySelectorAll(".vs-give-host").forEach(btn =>
+      btn.addEventListener("click", () => confirmTransfer(btn.dataset.give)));
+  }
+
+  async function confirmTransfer(targetId) {
+    const target = Versus.getPlayers().find(p => p.id === targetId);
+    if (!target) return;
+    if (!confirm(`'${target.name}'님에게 방장을 넘길까요?`)) return;
+    await Versus.transferHost(targetId);
+  }
+
+  // 방장 권한이 바뀌면 대기실의 역할 표시/설정 영역을 갱신
+  function refreshRole() {
+    const R = Versus.Room;
+    const roleEl = $("#vs-lobby-role");
+    if (roleEl) roleEl.textContent = R.isHost ? "방장" : "참가자";
+    const hostCtl = $("#vs-host-controls");
+    if (hostCtl) hostCtl.style.display = R.isHost ? "" : "none";
+    const guestNote = $("#vs-guest-note");
+    if (guestNote) guestNote.style.display = R.isHost ? "none" : "";
+    // 참가자 목록도 다시 그려 위임 버튼 노출을 갱신
+    renderPlayers(Versus.getPlayers());
   }
 
   function enterLobby() {
@@ -149,6 +179,8 @@
 
     // 참가자 목록이 실시간으로 바뀌면 다시 그림
     Versus.onPlayersChange(renderPlayers);
+    // 방장 권한이 바뀌면 역할/설정 영역 갱신
+    Versus.onHostChange(refreshRole);
     $("#vs-code-input")?.addEventListener("keydown", e => { if (e.key === "Enter") doJoin(); });
     // 코드 입력은 자동 대문자
     $("#vs-code-input")?.addEventListener("input", e => {
