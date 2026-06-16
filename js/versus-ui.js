@@ -190,6 +190,10 @@
     $("#vs-create-btn")?.addEventListener("click", doCreate);
     $("#vs-join-btn")?.addEventListener("click", () => doJoin());
 
+    // 새로고침/창닫기 직전: presence에서 빠르게 빠져 남은 사람들이 즉시 방장 승계하도록.
+    // (DB 쓰기는 불안정하므로 시도하지 않고, '접속 종료'만 알린다)
+    window.addEventListener("pagehide", () => { try { Versus.quickLeave(); } catch (e) {} });
+
     // 참가자 목록이 실시간으로 바뀌면 다시 그림
     Versus.onPlayersChange(renderPlayers);
     // 방장 권한이 바뀌면 역할/설정 영역 갱신

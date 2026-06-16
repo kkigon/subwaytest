@@ -128,6 +128,7 @@ const Versus = (() => {
     channel.on("presence", { event: "sync" }, () => {
       Room.players = buildPlayers(channel.presenceState());
       notifyPlayers();
+      maybeReassignHost();   // 방장이 사라졌으면 남은 사람이 자동 승계
     });
 
     // 즉시성 보강용 브로드캐스트(방장 변경을 빠르게 알림). 단일 진실은 여전히 DB.
@@ -175,6 +176,44 @@ const Versus = (() => {
     if (changed) { notifyHost(); }
     // 정렬(왕관 위치)도 갱신
     notifyPlayers();
+  }
+
+  // 방장이 방에서 사라졌으면(새로고침·접속종료 등) 남은 사람 중 한 명이 자동 승계.
+  // 모든 클라이언트가 "현재 접속자 중 id가 가장 작은 사람"을 새 방장으로 선출(결정론적)하고,
+  // 그 사람만 DB를 갱신한다 → Postgres Changes로 모두에게 전파되어 일관성 유지.
+  let reassigning = false;
+  async function maybeReassignHost() {
+    const players = Room.players;
+    if (!players || players.length === 0) return;
+    // 현재 방장이 아직 접속 중이면 아무 것도 안 함
+    const hostPresent = Room.hostId && players.some(p => p.id === Room.hostId);
+    if (hostPresent) return;
+
+    // 새 방장 후보: 접속자 중 id 사전순 최소 (모두가 동일하게 계산)
+    const sorted = [...players].sort((a, b) => String(a.id).localeCompare(String(b.id)));
+    const elected = sorted[0];
+    if (!elected) return;
+
+    // 내가 선출된 사람일 때만 DB에 기록 (중복 쓰기 방지)
+    if (elected.id === myId() && !reassigning) {
+      reassigning = true;
+      const c = client();
+      try {
+        if (c && Room.code) {
+          await c.from("rooms").update({ host_id: elected.id, host_name: elected.name }).eq("code", Room.code);
+        }
+        // 즉시성 보강 브로드캐스트
+        if (Room.channel) {
+          try {
+            await Room.channel.send({ type: "broadcast", event: "host_changed",
+              payload: { newHostId: elected.id, newHostName: elected.name } });
+          } catch (e) {}
+        }
+      } catch (e) { /* 무시 */ }
+      // 내 화면도 즉시 반영
+      applyHost(elected.id, elected.name);
+      setTimeout(() => { reassigning = false; }, 1000);
+    }
   }
 
   async function disconnectChannel(keepList) {
@@ -302,10 +341,16 @@ const Versus = (() => {
     Room.data = null; Room.players = [];
   }
 
+  // 새로고침/창닫기 직전 호출: presence에서 즉시 빠진다(동기적 시도).
+  // DB 쓰기는 하지 않음(불안정) — 남은 사람들이 maybeReassignHost로 승계.
+  function quickLeave() {
+    try { if (Room.channel) Room.channel.untrack(); } catch (e) {}
+  }
+
   return {
     Room,
     makeCode, guestName, resolveMyName, myThemeLine, inviteLink, myId,
-    createRoom, joinRoom, leaveRoom, transferHost,
+    createRoom, joinRoom, leaveRoom, transferHost, quickLeave,
     onPlayersChange, onHostChange, getPlayers: () => Room.players,
     isHost, getHostId: () => Room.hostId,
   };
