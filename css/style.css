@@ -932,3 +932,58 @@ body.modal-open { overflow: hidden; }
 .vs-qtimer.show { display: inline-flex; }
 .vs-qtimer.danger { background: #ffe2e2; color: #d12b2b; animation: vsPulse .6s ease-in-out infinite; }
 @keyframes vsPulse { 0%,100%{ transform: scale(1);} 50%{ transform: scale(1.15);} }
+
+/* ============ 대전: 상단 실시간 점수판 ============ */
+.vs-scoreboard {
+  position: fixed; top: 64px; left: 50%; transform: translateX(-50%);
+  z-index: 30; display: none; gap: 8px; flex-wrap: wrap; justify-content: center;
+  max-width: 96vw; padding: 0 8px;
+}
+.vs-scoreboard.show { display: flex; }
+.vs-sb-item {
+  display: inline-flex; align-items: center; gap: 6px;
+  background: rgba(255,255,255,.95); border: 1.5px solid #e7e9ee; border-radius: 999px;
+  padding: 5px 11px; font-size: 13px; font-weight: 700; color: var(--ink);
+  box-shadow: 0 3px 10px rgba(0,0,0,.08); transition: all .2s var(--ease);
+  position: relative;
+}
+.vs-sb-item.me { border-color: var(--line-blue); }
+.vs-sb-item.winner {
+  border-color: #34c759; background: #e9fbef;
+  animation: vsWin .5s var(--ease);
+  box-shadow: 0 0 0 3px rgba(52,199,89,.3), 0 4px 14px rgba(52,199,89,.35);
+}
+@keyframes vsWin { 0%{ transform: scale(1);} 40%{ transform: scale(1.13);} 100%{ transform: scale(1);} }
+.vs-sb-dot { width: 9px; height: 9px; border-radius: 50%; flex: none; }
+.vs-sb-name { max-width: 90px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.vs-sb-score { font-weight: 800; color: var(--line-blue); min-width: 14px; text-align: center; }
+.vs-sb-item.winner .vs-sb-score { color: #1ea34a; }
+.vs-sb-typing {
+  font-size: 10.5px; font-weight: 700; color: #fff; background: #9aa0a6;
+  border-radius: 999px; padding: 1px 7px; margin-left: 2px;
+  animation: vsTypingBlink 1s ease-in-out infinite;
+}
+@keyframes vsTypingBlink { 0%,100%{ opacity: 1;} 50%{ opacity: .45;} }
+
+/* 게임 중에는 점수판 자리만큼 지도 위에 떠 있게(겹침 허용). 모바일은 더 작게 */
+@media (max-width: 560px) {
+  .vs-scoreboard { top: 58px; gap: 5px; }
+  .vs-sb-item { padding: 4px 8px; font-size: 11.5px; }
+  .vs-sb-name { max-width: 64px; }
+}
+
+/* ============ 대전: 최종 순위 화면 ============ */
+.vs-result-list { display: flex; flex-direction: column; gap: 8px; margin: 8px 0 18px; }
+.vs-result-item {
+  display: flex; align-items: center; gap: 10px;
+  background: #f7f8fa; border-radius: 14px; padding: 12px 14px;
+  font-size: 15px; font-weight: 700; color: var(--ink);
+}
+.vs-result-item.first { background: linear-gradient(135deg,#fff7e0,#ffeebb); border: 2px solid #f0c64b; }
+.vs-result-item.me { outline: 2px solid var(--line-blue); }
+.vs-result-rank { font-size: 20px; width: 28px; text-align: center; flex: none; }
+.vs-rank-num { font-size: 15px; font-weight: 800; color: var(--ink-soft); }
+.vs-result-name { flex: 1; }
+.vs-result-score { font-weight: 800; color: var(--line-blue); }
+.vs-result-item.first .vs-result-score { color: #b8860b; }
+.vs-result-actions { display: flex; flex-direction: column; gap: 8px; }
