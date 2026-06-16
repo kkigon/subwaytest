@@ -46,6 +46,9 @@
     </div>
   </header>
 
+  <!-- 대전: 상단 실시간 점수판 -->
+  <div id="vs-scoreboard" class="vs-scoreboard" aria-hidden="true"></div>
+
   <!-- 정답/오답 피드백 -->
   <div id="feedback" class="feedback" role="status"></div>
 
@@ -246,6 +249,22 @@
       <p id="vs-guest-note" class="muted" style="display:none;">방장이 게임을 시작하길 기다리는 중…</p>
 
       <button class="ghost-btn vs-leave-btn" type="button">← 나가기</button>
+    </div>
+  </div>
+
+  <!-- 대전: 최종 순위 화면 -->
+  <div id="vs-result-screen" class="overlay vs-screen">
+    <div class="overlay-card vs-card">
+      <div class="title-plate small">
+        <span class="title-dot"></span>
+        <h1>🏆 최종 순위</h1>
+        <span class="title-dot"></span>
+      </div>
+      <div id="vs-result-list" class="vs-result-list"></div>
+      <div id="vs-result-actions" class="vs-result-actions">
+        <button id="vs-again-btn" class="primary-btn" type="button">대기실로 돌아가기</button>
+        <button class="ghost-btn vs-leave-btn" type="button">← 나가기</button>
+      </div>
     </div>
   </div>
 
