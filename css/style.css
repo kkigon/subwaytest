@@ -868,3 +868,20 @@ body.modal-open { overflow: hidden; }
   .vs-code-big { font-size: 32px; letter-spacing: 5px; }
   .title-plate.small h1 { font-size: 21px; }
 }
+
+/* 대전 대기실: 실시간 참가자 목록 */
+.vs-players-count {
+  font-size: 12.5px; font-weight: 800; color: var(--ink-soft);
+  margin-bottom: 8px; text-align: center;
+}
+.vs-players-list { display: flex; flex-direction: column; gap: 8px; }
+.vs-player {
+  display: flex; align-items: center; gap: 8px;
+  animation: vsPlayerIn .25s var(--ease);
+}
+@keyframes vsPlayerIn { from { opacity: 0; transform: translateY(-4px); } }
+.vs-crown { font-size: 15px; flex: none; }
+.vs-me {
+  font-size: 10.5px; font-weight: 800; color: #fff;
+  background: var(--line-blue); border-radius: 999px; padding: 2px 7px; flex: none;
+}
