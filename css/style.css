@@ -897,3 +897,26 @@ body.modal-open { overflow: hidden; }
 }
 .vs-give-host:hover { background: #ffeeb0; transform: translateY(-1px); }
 .vs-player { width: 100%; }
+
+/* 대전 대기실 — 방장 게임 설정 */
+.vs-setting-row { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
+.vs-setting-label { font-size: 13px; font-weight: 700; color: var(--ink-soft); width: 36px; flex: none; }
+.vs-seg { display: flex; gap: 6px; flex: 1; flex-wrap: wrap; }
+.vs-seg-btn {
+  font: inherit; font-size: 13px; font-weight: 700;
+  padding: 7px 12px; border-radius: 10px;
+  border: 2px solid #e7e9ee; background: #fff; color: var(--ink-soft);
+  cursor: pointer; transition: all .15s var(--ease); flex: 1; white-space: nowrap;
+}
+.vs-seg-btn:hover { border-color: #c8cfdb; }
+.vs-seg-btn.active { background: var(--line-blue); border-color: var(--line-blue); color: #fff; }
+
+.vs-custom-lines { display: none; flex-wrap: wrap; gap: 6px; margin: 0 0 12px; }
+.vs-custom-lines.show { display: flex; }
+.vs-custom-lines .line-check {
+  display: inline-flex; align-items: center; gap: 5px;
+  padding: 4px 8px; border-radius: 999px; background: #f3f4f7; cursor: pointer; font-size: 12px;
+}
+.vs-custom-lines .line-check input { margin: 0; }
+
+#vs-start-btn { margin-top: 6px; }
