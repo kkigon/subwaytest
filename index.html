@@ -49,6 +49,9 @@
   <!-- 대전: 상단 실시간 점수판 -->
   <div id="vs-scoreboard" class="vs-scoreboard" aria-hidden="true"></div>
 
+  <!-- 대전: 게임 시작 카운트다운 -->
+  <div id="vs-countdown" class="vs-countdown" aria-hidden="true"><span id="vs-countdown-num">3</span></div>
+
   <!-- 정답/오답 피드백 -->
   <div id="feedback" class="feedback" role="status"></div>
 
@@ -261,6 +264,7 @@
         <span class="title-dot"></span>
       </div>
       <div id="vs-result-list" class="vs-result-list"></div>
+      <p id="vs-result-note" class="muted" style="margin:0 0 8px; font-size:13px;"></p>
       <div id="vs-result-actions" class="vs-result-actions">
         <button id="vs-again-btn" class="primary-btn" type="button">대기실로 돌아가기</button>
         <button class="ghost-btn vs-leave-btn" type="button">← 나가기</button>
