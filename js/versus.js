@@ -185,6 +185,10 @@ const Versus = (() => {
         try { Room.channel.send({ type: "broadcast", event: "host_set", payload: { hostId: Room.hostId, hostName: Room.data && Room.data.host_name } }); } catch (e) {}
       }
     });
+    // 게임 시작 신호: 방장이 보낸 설정+문제순서로 모두 동시에 게임 시작
+    channel.on("broadcast", { event: "game_start" }, ({ payload }) => {
+      if (payload) startGameFromSignal(payload);
+    });
 
     Room.channel = channel;
     await new Promise((resolve) => {
@@ -293,6 +297,63 @@ const Versus = (() => {
     return { ok: true, code };
   }
 
+  /* ---------- 게임 설정 / 시작 ---------- */
+  // 방장이 대기실에서 설정을 바꾸면 DB에 저장(다음 단계에서 대기실 표시에 활용 가능)
+  async function updateSettings(s) {
+    if (!Room.code || !isHost()) return { ok: false };
+    const patch = {};
+    if (s.region !== undefined) patch.region = s.region;
+    if (s.mode !== undefined) patch.mode = s.mode;
+    if (s.customLines !== undefined) patch.custom_lines = (s.customLines || []).join(",");
+    if (s.duration !== undefined) patch.duration_sec = s.duration;
+    if (s.playMode !== undefined) patch.play_mode = s.playMode;
+    Room.data = Object.assign({}, Room.data, patch);
+    const c = client();
+    if (c) { try { await c.from("rooms").update(patch).eq("code", Room.code); } catch (e) {} }
+    return { ok: true };
+  }
+
+  // 게임 시작 신호 수신 시 모두가 실행 (방장 자신도 self:true로 받음)
+  const gameStartListeners = [];
+  let lastStartedAt = 0;
+  function onGameStart(fn) { gameStartListeners.push(fn); }
+  function startGameFromSignal(payload) {
+    // 같은 시작 신호를 중복 처리하지 않도록 startedAt으로 디듀프
+    if (payload && payload.startedAt && payload.startedAt === lastStartedAt) return;
+    if (payload && payload.startedAt) lastStartedAt = payload.startedAt;
+    if (Room.data) Room.data.status = "playing";
+    gameStartListeners.forEach(fn => { try { fn(payload); } catch (e) {} });
+  }
+
+  // 방장이 "게임 시작"을 누르면 호출: 문제 순서 생성 + 모두에게 broadcast
+  async function startGame(settings) {
+    if (!Room.code || !isHost()) return { ok: false, message: "방장만 시작할 수 있어요." };
+    const region = settings.region || (Room.data && Room.data.region) || "seoul";
+    const mode = settings.mode || "all";
+    const customLines = settings.customLines || [];
+    const playMode = settings.playMode || "timed";
+    const duration = settings.duration || 60;
+
+    // 출제 노선 id와 문제 순서를 방장이 생성 (모두 동일하게 쓰도록 broadcast)
+    const lineIds = window.VersusGame.resolveLineIds(region, mode, customLines);
+    if (!lineIds || lineIds.length === 0) return { ok: false, message: "노선을 선택해주세요." };
+    const order = window.VersusGame.buildOrder(region, lineIds);
+
+    const payload = { region, mode, lineIds, playMode, duration, order, startedAt: Date.now() };
+
+    // 상태를 playing으로 (재접속자가 게임 중임을 알 수 있게)
+    const c = client();
+    if (c) { try { await c.from("rooms").update({ status: "playing" }).eq("code", Room.code); } catch (e) {} }
+
+    // 모두에게 시작 신호 (self:true라 나도 받아서 같은 경로로 시작)
+    if (Room.channel) {
+      try { await Room.channel.send({ type: "broadcast", event: "game_start", payload }); } catch (e) {}
+    }
+    // 혹시 broadcast 자기수신이 안 되는 경우 대비, 직접도 한 번
+    startGameFromSignal(payload);
+    return { ok: true };
+  }
+
   /* ---------- 수동 위임 ---------- */
   async function transferHost(newHostId) {
     if (!Room.code || !isHost()) return { ok: false };
@@ -336,6 +397,7 @@ const Versus = (() => {
     Room,
     makeCode, guestName, resolveMyName, myThemeLine, inviteLink, myId,
     createRoom, joinRoom, leaveRoom, transferHost, quickLeave, retrack,
+    updateSettings, startGame, onGameStart,
     onPlayersChange, onHostChange, getPlayers: () => Room.players,
     isHost, getHostId,
   };

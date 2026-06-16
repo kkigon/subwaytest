@@ -145,6 +145,93 @@
   }
 
   // 방장 권한이 바뀌면 대기실의 역할 표시/설정 영역을 갱신
+  /* ---------- 방장 게임 설정 ---------- */
+  const vsSettings = { region: "seoul", mode: "core", customLines: [], duration: 60, playMode: "timed" };
+
+  // 세그먼트 버튼(지역/노선/시간) 한 그룹 처리
+  function wireSeg(containerSel, onPick) {
+    const box = $(containerSel);
+    if (!box) return;
+    box.querySelectorAll(".vs-seg-btn").forEach(btn => {
+      btn.addEventListener("click", () => {
+        box.querySelectorAll(".vs-seg-btn").forEach(b => b.classList.remove("active"));
+        btn.classList.add("active");
+        onPick(btn);
+      });
+    });
+  }
+
+  // 지역에 맞춰 노선 세그먼트(1~9호선 표시 여부)와 커스텀 picker 갱신
+  function syncRegionUI() {
+    // 부산은 1~9호선(core)이 없으므로 그 버튼 숨기고, core면 all로 보정
+    const modeBox = $("#vs-set-mode");
+    const coreBtn = modeBox && modeBox.querySelector('[data-mode="core"]');
+    if (coreBtn) coreBtn.style.display = (vsSettings.region === "busan") ? "none" : "";
+    if (vsSettings.region === "busan" && vsSettings.mode === "core") {
+      vsSettings.mode = "all";
+      modeBox.querySelectorAll(".vs-seg-btn").forEach(b => b.classList.toggle("active", b.dataset.mode === "all"));
+    }
+    buildVsCustomPicker();
+    updateCustomVisibility();
+  }
+
+  function updateCustomVisibility() {
+    const box = $("#vs-custom-lines");
+    if (box) box.classList.toggle("show", vsSettings.mode === "custom");
+  }
+
+  // 커스텀 노선 체크박스 (현재 지역의 노선들)
+  function buildVsCustomPicker() {
+    const box = $("#vs-custom-lines");
+    if (!box || typeof LINES === "undefined") return;
+    const lines = LINES.filter(l => (l.region || "seoul") === vsSettings.region);
+    // 지역이 바뀌면 이전 지역 선택은 초기화
+    vsSettings.customLines = vsSettings.customLines.filter(id => lines.some(l => l.id === id));
+    box.innerHTML = "";
+    for (const line of lines) {
+      const label = document.createElement("label");
+      label.className = "line-check";
+      const darkText = line.darkText ? "#23262b" : "#fff";
+      label.innerHTML =
+        `<input type="checkbox" value="${line.id}">` +
+        `<span class="line-chip" style="--c:${line.color};--t:${darkText}">${line.badge}</span>` +
+        `<span class="line-check-name">${escapeHtml(line.name)}</span>`;
+      const input = label.querySelector("input");
+      input.checked = vsSettings.customLines.includes(line.id);
+      input.addEventListener("change", () => {
+        if (input.checked) { if (!vsSettings.customLines.includes(line.id)) vsSettings.customLines.push(line.id); }
+        else { vsSettings.customLines = vsSettings.customLines.filter(id => id !== line.id); }
+      });
+      box.appendChild(label);
+    }
+  }
+
+  let settingsWired = false;
+  function wireSettingsOnce() {
+    if (settingsWired) return;
+    settingsWired = true;
+    wireSeg("#vs-set-region", (btn) => { vsSettings.region = btn.dataset.region; syncRegionUI(); });
+    wireSeg("#vs-set-mode", (btn) => { vsSettings.mode = btn.dataset.mode; updateCustomVisibility(); });
+    wireSeg("#vs-set-duration", (btn) => { vsSettings.duration = parseInt(btn.dataset.dur, 10) || 60; });
+    $("#vs-start-btn")?.addEventListener("click", doStartGame);
+  }
+
+  async function doStartGame() {
+    if (vsSettings.mode === "custom" && vsSettings.customLines.length === 0) {
+      alert("커스텀 모드에서는 노선을 1개 이상 선택해주세요.");
+      return;
+    }
+    const btn = $("#vs-start-btn");
+    btn.disabled = true; btn.textContent = "시작하는 중…";
+    const res = await Versus.startGame({
+      region: vsSettings.region, mode: vsSettings.mode,
+      customLines: vsSettings.customLines, duration: vsSettings.duration,
+      playMode: "timed",
+    });
+    btn.disabled = false; btn.textContent = "게임 시작";
+    if (!res.ok) alert(res.message || "시작에 실패했어요.");
+  }
+
   function refreshRole() {
     const host = Versus.isHost();
     const roleEl = $("#vs-lobby-role");
@@ -169,6 +256,10 @@
 
     // 내 이름 표시
     $("#vs-my-name").textContent = R.myName;
+
+    // 방장 설정 UI 준비
+    wireSettingsOnce();
+    syncRegionUI();
 
     // 실시간 참가자 목록 렌더
     renderPlayers(Versus.getPlayers());
@@ -218,6 +309,12 @@
     Versus.onPlayersChange(renderPlayers);
     // 방장 권한이 바뀌면 역할/설정 영역 갱신
     Versus.onHostChange(refreshRole);
+    // 게임 시작 신호 → 모두 같은 설정/문제로 게임 화면 진입
+    Versus.onGameStart((cfg) => {
+      if (window.VersusGame && typeof window.VersusGame.start === "function") {
+        window.VersusGame.start(cfg);
+      }
+    });
     $("#vs-code-input")?.addEventListener("keydown", e => { if (e.key === "Enter") doJoin(); });
     // 코드 입력은 자동 대문자
     $("#vs-code-input")?.addEventListener("input", e => {

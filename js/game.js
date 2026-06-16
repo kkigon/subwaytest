@@ -26,6 +26,9 @@ const State = {
   awaitingNext: false,
   suggestions: [],
   suggestIndex: -1,
+  // ----- 대전 모드 -----
+  versus: false,         // 대전 모드로 진행 중인지
+  versusDuration: 60,    // 대전 제한시간(초)
 };
 
 /* ---------------- 사운드 ---------------- */
@@ -152,6 +155,73 @@ function shuffle(arr) {
     [arr[i], arr[j]] = [arr[j], arr[i]];
   }
   return arr;
+}
+
+/* ---------------- 대전 모드 게임 시작 ----------------
+   config = {
+     region: 'seoul'|'busan',
+     lineIds: [...],          // 출제 대상 노선 id
+     playMode: 'timed'|'endless',
+     duration: 60,            // 초 (timed일 때)
+     order: [stationKey, ...] // 방장이 정한 문제 순서(모두 동일)
+   }
+   모든 참가자가 같은 config로 호출 → 같은 문제를 같은 순서로 본다.
+------------------------------------------------------ */
+function startVersusGame(config) {
+  State.region = config.region || "seoul";
+  State.mode = config.mode || "all";
+  State.playMode = config.playMode || "timed";
+  State.versus = true;
+  State.versusDuration = config.duration || 60;
+
+  State.network = buildNetwork(config.lineIds, { displayLineIds: regionLineIds() });
+  SubwayMap.render(State.network);
+
+  // 방장이 보내준 순서를 그대로 사용(없으면 로컬 셔플로 폴백)
+  const validKeys = new Set(State.network.quizStations.keys());
+  let order = Array.isArray(config.order) ? config.order.filter(k => validKeys.has(k)) : null;
+  if (!order || order.length === 0) order = shuffle([...validKeys]);
+  // nextQuestion이 pool.pop()으로 뒤에서 꺼내므로, 0번이 먼저 나오도록 뒤집어 넣는다
+  State.pool = order.slice().reverse();
+
+  State.score = 0;
+  State.hintsLeft = HINTS_PER_GAME;
+  State.playing = true;
+  State.awaitingNext = false;
+
+  $("#score").textContent = "0";
+  $("#hint-count").textContent = State.hintsLeft;
+  $("#btn-hint").disabled = false;
+  $("#hint-display").classList.remove("show");
+
+  // 대전 화면(대기실 등) 닫기
+  document.body.classList.remove("in-versus");
+  document.querySelectorAll(".vs-screen").forEach(s => s.classList.remove("show"));
+
+  document.body.classList.add("in-game");
+  document.body.classList.remove("at-home", "at-end", "studying");
+  document.body.classList.toggle("endless-mode", State.playMode === "endless");
+
+  setTimeout(() => {
+    nextQuestion();
+    if (State.playMode === "timed") {
+      State.endAt = performance.now() + State.versusDuration * 1000;
+      tickTimer();
+    } else {
+      State.endAt = Infinity;
+    }
+    SubwayMap.setInteractive(true);
+    $("#answer-input").focus();
+  }, 700);
+}
+
+// 대전용 문제 순서 생성(방장이 호출). 주어진 노선으로 네트워크를 만들어 역 키를 섞는다.
+function buildVersusOrder(region, lineIds) {
+  const prevRegion = State.region;
+  State.region = region;   // buildNetwork가 region에 의존하지 않지만 안전하게
+  const net = buildNetwork(lineIds, { displayLineIds: lineIds });
+  State.region = prevRegion;
+  return shuffle([...net.quizStations.keys()]);
 }
 
 /* ---------------- 타이머 ---------------- */
@@ -345,7 +415,8 @@ function endGame() {
   document.body.classList.add("at-end");
 
   // 백엔드에 기록 저장 (시간제한 모드 + 로그인 상태일 때만; 훅이 내부에서 판단)
-  if (typeof window.onPlayFinished === "function") {
+  // 대전 모드 게임은 개인 랭킹에 저장하지 않는다.
+  if (!State.versus && typeof window.onPlayFinished === "function") {
     window.onPlayFinished({
       score: State.score,
       region: State.region,     // 'seoul' | 'busan'
@@ -353,6 +424,13 @@ function endGame() {
       modeLabel: modeLabel(),   // 사람이 읽는 라벨
       playMode: State.playMode, // 'timed' | 'endless'
     });
+  }
+
+  // 대전 모드였다면 versus-ui에 알림(다음 단계에서 결과/대기실 처리)
+  if (State.versus && typeof window.onVersusGameEnd === "function") {
+    const finalScore = State.score;
+    State.versus = false;
+    window.onVersusGameEnd({ score: finalScore });
   }
 }
 
@@ -583,3 +661,20 @@ document.addEventListener("DOMContentLoaded", () => {
   // 초기 레이아웃이 늦게 잡히는 모바일 대비: 한 번 더 맞춤
   requestAnimationFrame(() => SubwayMap.fitAll(true));
 });
+
+/* ---------------- 대전 모드 연동 (versus-ui.js에서 사용) ---------------- */
+window.VersusGame = {
+  start: startVersusGame,      // 모두가 호출: 같은 config로 게임 시작
+  buildOrder: buildVersusOrder, // 방장이 호출: 문제 순서 생성
+  // 노선 범위(core/all/custom)와 지역으로 실제 출제 노선 id 배열을 계산
+  resolveLineIds(region, mode, customLines) {
+    const lines = LINES.filter(l => (l.region || "seoul") === region);
+    if (mode === "core") {
+      const core = lines.filter(l => l.core).map(l => l.id);
+      return core.length ? core : lines.map(l => l.id);
+    }
+    if (mode === "custom" && customLines && customLines.length) return customLines.slice();
+    return lines.map(l => l.id); // all (부산은 core 없음 → all)
+  },
+  isVersus: () => State.versus,
+};
