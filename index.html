@@ -208,9 +208,39 @@
       <p class="field-label">참가자</p>
       <div id="vs-players" class="vs-players"></div>
 
-      <!-- 방장 전용: 게임 설정 + 시작 (다음 단계에서 채움) -->
+      <!-- 방장 전용: 게임 설정 + 시작 -->
       <div id="vs-host-controls" class="vs-host-controls">
-        <p class="muted">게임 설정과 시작 버튼은 다음 단계에서 추가될 거예요.</p>
+        <p class="field-label">게임 설정</p>
+
+        <div class="vs-setting-row">
+          <span class="vs-setting-label">지역</span>
+          <div class="vs-seg" id="vs-set-region">
+            <button type="button" class="vs-seg-btn active" data-region="seoul">수도권</button>
+            <button type="button" class="vs-seg-btn" data-region="busan">부산</button>
+          </div>
+        </div>
+
+        <div class="vs-setting-row">
+          <span class="vs-setting-label">노선</span>
+          <div class="vs-seg" id="vs-set-mode">
+            <button type="button" class="vs-seg-btn core-only active" data-mode="core">1~9호선</button>
+            <button type="button" class="vs-seg-btn" data-mode="all">전체</button>
+            <button type="button" class="vs-seg-btn" data-mode="custom">커스텀</button>
+          </div>
+        </div>
+
+        <div id="vs-custom-lines" class="vs-custom-lines"></div>
+
+        <div class="vs-setting-row">
+          <span class="vs-setting-label">시간</span>
+          <div class="vs-seg" id="vs-set-duration">
+            <button type="button" class="vs-seg-btn" data-dur="30">30초</button>
+            <button type="button" class="vs-seg-btn active" data-dur="60">60초</button>
+            <button type="button" class="vs-seg-btn" data-dur="90">90초</button>
+          </div>
+        </div>
+
+        <button id="vs-start-btn" class="primary-btn" type="button">게임 시작</button>
       </div>
       <p id="vs-guest-note" class="muted" style="display:none;">방장이 게임을 시작하길 기다리는 중…</p>
 
