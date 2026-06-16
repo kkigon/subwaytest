@@ -920,3 +920,15 @@ body.modal-open { overflow: hidden; }
 .vs-custom-lines .line-check input { margin: 0; }
 
 #vs-start-btn { margin-top: 6px; }
+
+/* 대전: 문제별 10초 타이머 배지 */
+.vs-qtimer {
+  display: none; flex: none; margin-left: auto;
+  min-width: 30px; height: 30px; padding: 0 8px;
+  align-items: center; justify-content: center;
+  border-radius: 999px; font-weight: 800; font-size: 15px;
+  background: #eef1f6; color: var(--ink); 
+}
+.vs-qtimer.show { display: inline-flex; }
+.vs-qtimer.danger { background: #ffe2e2; color: #d12b2b; animation: vsPulse .6s ease-in-out infinite; }
+@keyframes vsPulse { 0%,100%{ transform: scale(1);} 50%{ transform: scale(1.15);} }
