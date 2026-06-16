@@ -170,11 +170,20 @@ const Versus = (() => {
 
     refreshJoinTime();
 
-    const channel = c.channel("room:" + Room.code, { config: { presence: { key: myId() } } });
+    // broadcast self:true → 내가 보낸 host_set도 동일 경로로 처리(일관성)
+    const channel = c.channel("room:" + Room.code, {
+      config: { presence: { key: myId() }, broadcast: { self: true } },
+    });
     channel.on("presence", { event: "sync" }, handleSync);
-    // 승계/위임 즉시성 보강 브로드캐스트(단일 진실은 여전히 DB host_id)
+    // 승계/위임 즉시 반영 — 이게 화면 갱신의 주 경로(브로드캐스트는 빠르고 안정적)
     channel.on("broadcast", { event: "host_set" }, ({ payload }) => {
       if (payload && payload.hostId) applyHost(payload.hostId, payload.hostName);
+    });
+    // 새로 들어온 사람이 현재 방장을 물어보면, 방장(또는 아는 사람)이 알려줌
+    channel.on("broadcast", { event: "host_who" }, () => {
+      if (Room.hostId && Room.channel) {
+        try { Room.channel.send({ type: "broadcast", event: "host_set", payload: { hostId: Room.hostId, hostName: Room.data && Room.data.host_name } }); } catch (e) {}
+      }
     });
 
     Room.channel = channel;
@@ -185,7 +194,7 @@ const Versus = (() => {
       setTimeout(() => resolve(false), 5000);
     });
 
-    // rooms 행 변경 실시간 감지 → host_id/상태 동기화
+    // rooms 행 변경 실시간 감지 → host_id/상태 동기화 (Realtime 켜져 있으면 동작)
     const dbCh = c.channel("roomdb:" + Room.code);
     dbCh.on("postgres_changes",
       { event: "*", schema: "public", table: "rooms", filter: "code=eq." + Room.code },
@@ -198,8 +207,30 @@ const Versus = (() => {
     Room.dbChannel = dbCh;
     await new Promise((resolve) => { dbCh.subscribe(() => resolve(true)); setTimeout(() => resolve(false), 5000); });
 
+    // 안전망: 주기적으로 DB의 host_id를 다시 읽어 화면을 자가 치유.
+    // (Postgres Changes가 혹시 안 켜져 있어도 몇 초 안에 방장 표시가 맞춰짐)
+    startReconciler();
+
     return true;
   }
+
+  // 주기적 DB 재동기화 (3초마다 host_id 확인)
+  let reconcileTimer = null;
+  function startReconciler() {
+    stopReconciler();
+    reconcileTimer = setInterval(async () => {
+      const c = client();
+      if (!c || !Room.code) return;
+      try {
+        const { data } = await c.from("rooms").select("host_id, host_name, status").eq("code", Room.code).maybeSingle();
+        if (data && data.host_id && data.host_id !== Room.hostId) {
+          applyHost(data.host_id, data.host_name);   // 화면 자가 치유
+        }
+        if (data && data.status && Room.data) Room.data.status = data.status;
+      } catch (e) {}
+    }, 3000);
+  }
+  function stopReconciler() { if (reconcileTimer) { clearInterval(reconcileTimer); reconcileTimer = null; } }
 
   async function retrack() {
     if (!Room.channel) return;
@@ -210,6 +241,7 @@ const Versus = (() => {
   async function disconnectChannel(keepList) {
     const c = client();
     if (hostCheckTimer) { clearTimeout(hostCheckTimer); hostCheckTimer = null; }
+    stopReconciler();
     if (c && Room.channel) { try { await Room.channel.untrack(); } catch (e) {} try { await c.removeChannel(Room.channel); } catch (e) {} }
     if (c && Room.dbChannel) { try { await c.removeChannel(Room.dbChannel); } catch (e) {} }
     Room.channel = null; Room.dbChannel = null;
