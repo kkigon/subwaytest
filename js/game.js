@@ -232,6 +232,36 @@ function showQuestionByIndex(i) {
   input.value = "";
   input.disabled = false;
   input.focus();
+  startQuestionTimer(i);   // 문제별 10초 타이머
+}
+
+const VS_QUESTION_SECONDS = 10;   // 문제별 제한시간
+// 문제별 카운트다운. 0이 되면 (방장이) 시간초과를 모두에게 알림.
+function startQuestionTimer(index) {
+  clearQuestionTimer();
+  const badge = $("#vs-qtimer");
+  if (badge) { badge.classList.add("show"); badge.classList.remove("danger"); }
+  State.qEndAt = performance.now() + VS_QUESTION_SECONDS * 1000;
+  const loop = () => {
+    if (!State.versus || !State.playing) return;
+    if (State.vsLocked || State.awaitingNext || State.vsIndex !== index) return; // 이미 정답/넘어감
+    const remain = Math.max(0, State.qEndAt - performance.now());
+    const s = Math.ceil(remain / 1000);
+    if (badge) { badge.textContent = s; badge.classList.toggle("danger", s <= 3); }
+    if (remain <= 0) {
+      // 시간초과: 방장만 모두에게 '승자 없음'을 알림(단일 권한)
+      if (typeof Versus !== "undefined" && Versus.isHost && Versus.isHost()) {
+        try { Versus.sendTimeout(index); } catch (e) {}
+      }
+      return;
+    }
+    State.qTimerFrame = requestAnimationFrame(loop);
+  };
+  loop();
+}
+function clearQuestionTimer() {
+  if (State.qTimerFrame) cancelAnimationFrame(State.qTimerFrame);
+  State.qTimerFrame = null;
 }
 
 // State.current 역으로 문제 UI(배지/문구/포커스)를 그린다 — nextQuestion과 공용 로직
@@ -282,41 +312,49 @@ function submitVersusAnswer() {
     return;
   }
 
-  // 정답! 내가 최초인지 확정은 broadcast로 — 우선 모두에게 알림
-  // (같은 문제에 대한 첫 vs_correct만 채택되고 나머지는 무시됨)
+  // 정답! 점수는 바로 올리지 않고 '주장'만 보낸다. 방장이 첫 주장자를 확정해 알려줌.
   if (typeof window.onVersusCorrect === "function") {
     window.onVersusCorrect({ index: State.vsIndex, station: State.current });
   }
 }
 
 // 누군가의 정답이 확정됐을 때(자신 포함) — versus-ui에서 broadcast 수신 후 호출
-// winner: {id, name}, index: 문제번호
+// winner: {id, name}  (id가 null이면 시간초과로 아무도 못 맞힘), index: 문제번호
 function versusApplyCorrect(winner, index) {
   if (!State.playing) return;
   if (index !== State.vsIndex) return;   // 지난 문제에 대한 신호면 무시
   if (State.vsLocked) return;            // 이미 처리됨(두 번째 정답 무시)
   State.vsLocked = true;
   State.awaitingNext = true;
+  clearQuestionTimer();
+  const badge = $("#vs-qtimer"); if (badge) badge.classList.remove("show");
 
   const input = $("#answer-input");
   input.disabled = true;
   clearSuggestions();
 
-  // 점수 집계
-  State.vsScores[winner.id] = (State.vsScores[winner.id] || 0) + 1;
-  // 내 점수 표시(상단 score)는 내가 맞혔을 때만 증가
-  const myVsId = (typeof Versus !== "undefined" && Versus.myId) ? Versus.myId() : null;
-  if (winner.id === myVsId) {
-    State.score = State.vsScores[winner.id];
-    $("#score").textContent = State.score;
+  const st = State.network.stations.get(State.current);
+  const isTimeout = !winner || !winner.id;
+
+  if (!isTimeout) {
+    // 점수 집계 (승자만)
+    State.vsScores[winner.id] = (State.vsScores[winner.id] || 0) + 1;
+    const myVsId = (typeof Versus !== "undefined" && Versus.myId) ? Versus.myId() : null;
+    if (winner.id === myVsId) {
+      State.score = State.vsScores[winner.id];
+      $("#score").textContent = State.score;
+    }
+    SubwayMap.revealLabel(State.current, true);
+    Sound.play("correct");
+    popFeedback(`⭕ ${winner.name} 정답! 「${st.name}」`, "ok");
+  } else {
+    // 시간초과: 아무도 못 맞힘 → 정답 공개만
+    SubwayMap.revealLabel(State.current, false);
+    Sound.play("wrong");
+    popFeedback(`⏱️ 시간 초과! 정답은 「${st.name}」`, "no");
   }
 
-  const st = State.network.stations.get(State.current);
-  SubwayMap.revealLabel(State.current, true);
-  Sound.play("correct");
-  popFeedback(`⭕ ${winner.name} 정답! 「${st.name}」`, "ok");
-
-  // 다음 문제로(모두 같은 인덱스로). 방장 여부와 무관하게 각자 같은 다음 인덱스 표시.
+  // 다음 문제로(모두 같은 인덱스로).
   const remain = State.endAt - performance.now();
   setTimeout(() => {
     if (remain <= 0) { endGame(); return; }
@@ -332,7 +370,9 @@ function tickTimer() {
     if (!State.playing) return;
     const remain = Math.max(0, State.endAt - performance.now());
     const s = Math.ceil(remain / 1000);
-    timerEl.textContent = `0:${String(s).padStart(2, "0")}`;
+    const mm = Math.floor(s / 60);
+    const ss = s % 60;
+    timerEl.textContent = `${mm}:${String(ss).padStart(2, "0")}`;
     timerEl.classList.toggle("danger", s <= 10);
     if (remain <= 0) {
       if (!State.awaitingNext) endGame();
@@ -498,6 +538,8 @@ function clearSuggestions() {
 function endGame() {
   State.playing = false;
   cancelAnimationFrame(State.timerFrame);
+  clearQuestionTimer();
+  const qb = $("#vs-qtimer"); if (qb) qb.classList.remove("show");
   SubwayMap.setInteractive(false);
   SubwayMap.hideFocus();
   SubwayMap.fitAll();
