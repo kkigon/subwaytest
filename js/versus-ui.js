@@ -39,6 +39,18 @@
     document.body.classList.remove("in-versus");
   }
 
+  // Account(로그인/프로필) 로딩이 끝날 때까지 잠깐 기다린다.
+  // → 로그인 사용자가 잠깐 Guest로 표시되는 문제 방지.
+  function ensureAccountReady(timeoutMs = 2500) {
+    return new Promise((resolve) => {
+      if (Account.isReady && Account.isReady()) return resolve();
+      let done = false;
+      const finish = () => { if (!done) { done = true; resolve(); } };
+      if (Account.onChange) Account.onChange(() => { if (Account.isReady && Account.isReady()) finish(); });
+      setTimeout(finish, timeoutMs);
+    });
+  }
+
   // 대기실에 들어가면 URL에 ?room=코드를 박아둔다 → 새로고침해도 자동 재입장
   function setRoomUrl(code) {
     try {
@@ -51,6 +63,7 @@
   async function doCreate() {
     const btn = $("#vs-create-btn");
     btn.disabled = true; btn.textContent = "방 만드는 중…";
+    await ensureAccountReady();   // 닉네임/프로필 로딩 완료 후 진행
     const res = await Versus.createRoom();
     btn.disabled = false; btn.textContent = "방 만들기";
     if (!res.ok) { $("#vs-entry-error").textContent = res.message || "방 생성 실패"; return; }
@@ -63,6 +76,7 @@
     const code = codeFromUrl || $("#vs-code-input").value;
     const btn = $("#vs-join-btn");
     if (btn) { btn.disabled = true; btn.textContent = "입장 중…"; }
+    await ensureAccountReady();   // 닉네임/프로필 로딩 완료 후 진행
     const res = await Versus.joinRoom(code);
     if (btn) { btn.disabled = false; btn.textContent = "입장하기"; }
     if (!res.ok) {
@@ -191,8 +205,14 @@
     $("#vs-join-btn")?.addEventListener("click", () => doJoin());
 
     // 새로고침/창닫기 직전: presence에서 빠르게 빠져 남은 사람들이 즉시 방장 승계하도록.
-    // (DB 쓰기는 불안정하므로 시도하지 않고, '접속 종료'만 알린다)
     window.addEventListener("pagehide", () => { try { Versus.quickLeave(); } catch (e) {} });
+
+    // 탭이 다시 보이게 되면 fresh 데이터로 재track (stale presence/유령 사용자 방지)
+    document.addEventListener("visibilitychange", () => {
+      if (document.visibilityState === "visible") { try { Versus.retrack(); } catch (e) {} }
+    });
+    // 로그인 상태가 바뀌면(프로필 로딩 완료 등) 방 안에 있을 때 내 표시 정보 갱신
+    Account.onChange && Account.onChange(() => { try { Versus.retrack(); } catch (e) {} });
 
     // 참가자 목록이 실시간으로 바뀌면 다시 그림
     Versus.onPlayersChange(renderPlayers);
@@ -211,17 +231,7 @@
     const params = new URLSearchParams(location.search);
     const roomCode = params.get("room");
     if (roomCode) {
-      const tryAuto = () => doJoin(roomCode);
-      if (Account.isReady && Account.isReady()) tryAuto();
-      else if (Account.onChange) {
-        // Account가 준비되면 한 번만 시도
-        let done = false;
-        Account.onChange(() => { if (!done && Account.isReady()) { done = true; tryAuto(); } });
-        // 혹시 onChange가 늦으면 안전장치
-        setTimeout(() => { if (!done) { done = true; tryAuto(); } }, 1500);
-      } else {
-        setTimeout(tryAuto, 1200);
-      }
+      ensureAccountReady().then(() => doJoin(roomCode));
     }
   });
 
