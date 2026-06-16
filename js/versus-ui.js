@@ -39,6 +39,14 @@
     document.body.classList.remove("in-versus");
   }
 
+  // 대기실에 들어가면 URL에 ?room=코드를 박아둔다 → 새로고침해도 자동 재입장
+  function setRoomUrl(code) {
+    try {
+      const url = location.pathname + "?room=" + code;
+      history.replaceState(null, "", url);
+    } catch (e) {}
+  }
+
   /* ---------- 방 만들기 ---------- */
   async function doCreate() {
     const btn = $("#vs-create-btn");
@@ -46,6 +54,7 @@
     const res = await Versus.createRoom();
     btn.disabled = false; btn.textContent = "방 만들기";
     if (!res.ok) { $("#vs-entry-error").textContent = res.message || "방 생성 실패"; return; }
+    setRoomUrl(res.code);
     enterLobby();
   }
 
@@ -59,27 +68,31 @@
     if (!res.ok) {
       const errEl = $("#vs-entry-error");
       if (errEl) errEl.textContent = res.message || "입장 실패";
-      // URL 자동입장 실패 시 진입화면이라도 보여줌
-      if (codeFromUrl) showScreen("#vs-entry-screen");
+      // URL 자동입장 실패 시: URL의 room 파라미터를 지우고 진입화면 표시
+      if (codeFromUrl) { try { history.replaceState(null, "", location.pathname); } catch (e) {} showScreen("#vs-entry-screen"); }
       return;
     }
+    setRoomUrl(res.code);
     enterLobby();
   }
 
   /* ---------- 대기실 ---------- */
+  // 테마 노선 색. themeLine이 없으면(게스트) 회색.
   function lineColor(id) {
+    if (!id) return "#9aa0a6";  // 게스트: 회색
     if (typeof lineById === "function") { const l = lineById(id); if (l) return l.color; }
-    return "#0052A4";
+    return "#9aa0a6";
   }
 
   // 참가자 한 명을 닉네임 태그로
   function playerTag(pl) {
     const color = lineColor(pl.themeLine);
     const isMe = (pl.id === Versus.myId());
-    const crown = pl.isHost ? `<span class="vs-crown" title="방장">👑</span>` : "";
+    const isThisHost = (pl.id === Versus.getHostId());
+    const crown = isThisHost ? `<span class="vs-crown" title="방장">👑</span>` : "";
     const meMark = isMe ? `<span class="vs-me">나</span>` : "";
-    // 내가 방장이고, 상대가 내가 아니면 → 방장 위임 버튼 표시
-    const giveBtn = (Versus.isHost() && !isMe && !pl.isHost)
+    // 내가 방장이고, 상대가 내가 아니고, 상대가 아직 방장이 아니면 → 위임 버튼
+    const giveBtn = (Versus.isHost() && !isMe && !isThisHost)
       ? `<button class="vs-give-host" type="button" data-give="${escapeHtml(pl.id)}" title="방장 넘기기">👑 위임</button>`
       : "";
     return `<div class="vs-player">
@@ -119,14 +132,14 @@
 
   // 방장 권한이 바뀌면 대기실의 역할 표시/설정 영역을 갱신
   function refreshRole() {
-    const R = Versus.Room;
+    const host = Versus.isHost();
     const roleEl = $("#vs-lobby-role");
-    if (roleEl) roleEl.textContent = R.isHost ? "방장" : "참가자";
+    if (roleEl) roleEl.textContent = host ? "방장" : "참가자";
     const hostCtl = $("#vs-host-controls");
-    if (hostCtl) hostCtl.style.display = R.isHost ? "" : "none";
+    if (hostCtl) hostCtl.style.display = host ? "" : "none";
     const guestNote = $("#vs-guest-note");
-    if (guestNote) guestNote.style.display = R.isHost ? "none" : "";
-    // 참가자 목록도 다시 그려 위임 버튼 노출을 갱신
+    if (guestNote) guestNote.style.display = host ? "none" : "";
+    // 참가자 목록도 다시 그려 왕관/위임 버튼 노출을 갱신
     renderPlayers(Versus.getPlayers());
   }
 
@@ -135,15 +148,15 @@
     $("#vs-lobby-code").textContent = R.code;
     $("#vs-lobby-link").value = Versus.inviteLink(R.code);
 
-    // 방장/참가자에 따라 안내 문구
-    $("#vs-lobby-role").textContent = R.isHost ? "방장" : "참가자";
-    $("#vs-host-controls").style.display = R.isHost ? "" : "none";
-    $("#vs-guest-note").style.display = R.isHost ? "none" : "";
+    const host = Versus.isHost();
+    $("#vs-lobby-role").textContent = host ? "방장" : "참가자";
+    $("#vs-host-controls").style.display = host ? "" : "none";
+    $("#vs-guest-note").style.display = host ? "none" : "";
 
     // 내 이름 표시
     $("#vs-my-name").textContent = R.myName;
 
-    // 실시간 참가자 목록 렌더 (현재 상태 즉시 + 변경 구독)
+    // 실시간 참가자 목록 렌더
     renderPlayers(Versus.getPlayers());
 
     showScreen("#vs-lobby-screen");
