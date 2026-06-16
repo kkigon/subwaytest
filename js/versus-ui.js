@@ -244,6 +244,69 @@
     renderPlayers(Versus.getPlayers());
   }
 
+  /* ---------- 상단 실시간 점수판 ---------- */
+  function renderScoreboard() {
+    const box = $("#vs-scoreboard");
+    if (!box) return;
+    if (!window.VersusGame || !VersusGame.isVersus()) { box.classList.remove("show"); return; }
+    const scores = (VersusGame.getScores && VersusGame.getScores()) || {};
+    const lastWinner = VersusGame.lastWinnerId && VersusGame.lastWinnerId();
+    const players = Versus.getPlayers();
+    const myId = Versus.myId();
+    // 점수 내림차순 정렬
+    const sorted = [...players].sort((a, b) => (scores[b.id] || 0) - (scores[a.id] || 0) || String(a.name).localeCompare(String(b.name)));
+    box.innerHTML = sorted.map(p => {
+      const sc = scores[p.id] || 0;
+      const color = lineColor(p.themeLine);
+      const isMe = p.id === myId;
+      const win = p.id === lastWinner;
+      const typing = p.typing;
+      return `<div class="vs-sb-item${win ? " winner" : ""}${isMe ? " me" : ""}">
+        <span class="vs-sb-dot" style="background:${color}"></span>
+        <span class="vs-sb-name">${escapeHtml(p.name)}</span>
+        <span class="vs-sb-score">${sc}</span>
+        ${typing ? `<span class="vs-sb-typing">입력중…</span>` : ""}
+      </div>`;
+    }).join("");
+    box.classList.add("show");
+  }
+
+  /* ---------- 최종 순위 화면 ---------- */
+  function showResult(data) {
+    const list = $("#vs-result-list");
+    const ranking = (data && data.ranking) || [];
+    const myId = (data && data.myId) || Versus.myId();
+    const medals = ["🥇", "🥈", "🥉"];
+    list.innerHTML = ranking.map((r, i) => {
+      const color = lineColor(r.themeLine);
+      const rankIcon = medals[i] || `<span class="vs-rank-num">${i + 1}</span>`;
+      const isMe = r.id === myId;
+      return `<div class="vs-result-item${isMe ? " me" : ""}${i === 0 ? " first" : ""}">
+        <span class="vs-result-rank">${rankIcon}</span>
+        <span class="vs-sb-dot" style="background:${color}"></span>
+        <span class="vs-result-name">${escapeHtml(r.name)}${isMe ? " (나)" : ""}</span>
+        <span class="vs-result-score">${r.score}점</span>
+      </div>`;
+    }).join("");
+
+    // 방장만 "대기실로" 버튼 활성, 참가자는 안내
+    const againBtn = $("#vs-again-btn");
+    if (againBtn) {
+      if (Versus.isHost()) { againBtn.style.display = ""; againBtn.textContent = "대기실로 돌아가기"; }
+      else { againBtn.style.display = "none"; }
+    }
+    showScreen("#vs-result-screen");
+    document.body.classList.remove("at-end");
+  }
+
+  // 대기실로 복귀 (모두)
+  function backToLobbyUI() {
+    // 게임/엔딩 상태 정리하고 대기실 표시
+    document.body.classList.remove("in-game", "at-end", "versus-mode");
+    const sb = $("#vs-scoreboard"); if (sb) sb.classList.remove("show");
+    enterLobby();
+  }
+
   function enterLobby() {
     const R = Versus.Room;
     $("#vs-lobby-code").textContent = R.code;
@@ -319,6 +382,17 @@
     window.onVersusCorrect = (info) => {
       try { Versus.sendCorrect(info.index); } catch (e) {}
     };
+    // 점수 변동 시 상단 점수판 갱신
+    window.onVersusScoreUpdate = renderScoreboard;
+    // presence(입력중/접속) 변하면 점수판도 갱신
+    Versus.onPlayersChange(() => { if (window.VersusGame && VersusGame.isVersus()) renderScoreboard(); });
+    // 게임 종료 → 최종 순위 화면
+    window.onVersusGameEnd = (data) => showResult(data);
+    // 방장이 대기실로 복귀 신호 → 모두 대기실로
+    Versus.onBackToLobby(() => { backToLobbyUI(); });
+    $("#vs-again-btn")?.addEventListener("click", async () => {
+      if (Versus.isHost()) { await Versus.backToLobby(); }
+    });
     $("#vs-code-input")?.addEventListener("keydown", e => { if (e.key === "Enter") doJoin(); });
     // 코드 입력은 자동 대문자
     $("#vs-code-input")?.addEventListener("input", e => {

@@ -33,6 +33,7 @@ const State = {
   vsIndex: 0,            // 현재 문제 번호(모두 공유)
   vsLocked: false,       // 현재 문제를 누가 이미 맞혔는지(잠금)
   vsScores: {},          // id -> 점수
+  vsLastWinner: null,    // 직전 정답자 id (초록 반짝용)
   vsAnsweredWrong: false,// 이번 문제에서 내가 이미 틀렸는지(중복 오답 방지용 표시)
 };
 
@@ -215,6 +216,7 @@ function startVersusGame(config) {
     tickTimer();
     SubwayMap.setInteractive(true);
     $("#answer-input").focus();
+    if (typeof window.onVersusScoreUpdate === "function") window.onVersusScoreUpdate();
   }, 700);
 }
 
@@ -294,6 +296,19 @@ function buildVersusOrder(region, lineIds) {
   return shuffle([...net.quizStations.keys()]);
 }
 
+// 대전: 입력 감지 → "입력중" presence 전파 (멈추면 1.2초 뒤 해제)
+let _typingTimer = null;
+function onVersusTyping() {
+  if (!State.versus || typeof Versus === "undefined" || !Versus.setTyping) return;
+  const hasText = $("#answer-input").value.trim().length > 0;
+  Versus.setTyping(hasText);
+  if (_typingTimer) clearTimeout(_typingTimer);
+  if (hasText) {
+    // 일정 시간 입력이 없으면 자동으로 입력중 해제
+    _typingTimer = setTimeout(() => { try { Versus.setTyping(false); } catch (e) {} }, 1500);
+  }
+}
+
 /* ---------------- 대전: 정답 제출 / 선착순 처리 ---------------- */
 // 내가 답을 제출 (대전 모드)
 function submitVersusAnswer() {
@@ -313,6 +328,7 @@ function submitVersusAnswer() {
   }
 
   // 정답! 점수는 바로 올리지 않고 '주장'만 보낸다. 방장이 첫 주장자를 확정해 알려줌.
+  if (typeof Versus !== "undefined" && Versus.setTyping) { try { Versus.setTyping(false); } catch (e) {} }
   if (typeof window.onVersusCorrect === "function") {
     window.onVersusCorrect({ index: State.vsIndex, station: State.current });
   }
@@ -339,6 +355,7 @@ function versusApplyCorrect(winner, index) {
   if (!isTimeout) {
     // 점수 집계 (승자만)
     State.vsScores[winner.id] = (State.vsScores[winner.id] || 0) + 1;
+    State.vsLastWinner = winner.id;
     const myVsId = (typeof Versus !== "undefined" && Versus.myId) ? Versus.myId() : null;
     if (winner.id === myVsId) {
       State.score = State.vsScores[winner.id];
@@ -349,14 +366,18 @@ function versusApplyCorrect(winner, index) {
     popFeedback(`⭕ ${winner.name} 정답! 「${st.name}」`, "ok");
   } else {
     // 시간초과: 아무도 못 맞힘 → 정답 공개만
+    State.vsLastWinner = null;
     SubwayMap.revealLabel(State.current, false);
     Sound.play("wrong");
     popFeedback(`⏱️ 시간 초과! 정답은 「${st.name}」`, "no");
   }
+  // 상단 점수판 갱신(초록 반짝 포함)
+  if (typeof window.onVersusScoreUpdate === "function") window.onVersusScoreUpdate();
 
   // 다음 문제로(모두 같은 인덱스로).
   const remain = State.endAt - performance.now();
   setTimeout(() => {
+    State.vsLastWinner = null;   // 반짝 효과는 잠깐만
     if (remain <= 0) { endGame(); return; }
     showQuestionByIndex(index + 1);
   }, REVEAL_DELAY);
@@ -556,7 +577,10 @@ function endGame() {
   }
 
   document.body.classList.remove("in-game");
-  document.body.classList.add("at-end");
+  // 대전 모드는 일반 엔딩 대신 versus 결과 화면을 띄운다(아래 onVersusGameEnd)
+  if (!State.versus) document.body.classList.add("at-end");
+  document.body.classList.remove("versus-mode");
+  const sb = $("#vs-scoreboard"); if (sb) sb.classList.remove("show");
 
   // 백엔드에 기록 저장 (시간제한 모드 + 로그인 상태일 때만; 훅이 내부에서 판단)
   // 대전 모드 게임은 개인 랭킹에 저장하지 않는다.
@@ -570,11 +594,23 @@ function endGame() {
     });
   }
 
-  // 대전 모드였다면 versus-ui에 알림(다음 단계에서 결과/대기실 처리)
+  // 대전 모드였다면 최종 순위를 만들어 versus-ui에 전달
   if (State.versus && typeof window.onVersusGameEnd === "function") {
-    const finalScore = State.score;
+    const scores = State.vsScores || {};
+    // 접속자 이름/색 정보
+    const players = (typeof Versus !== "undefined" && Versus.getPlayers) ? Versus.getPlayers() : [];
+    const nameMap = {}, themeMap = {};
+    players.forEach(p => { nameMap[p.id] = p.name; themeMap[p.id] = p.themeLine; });
+    // 점수가 있는 사람 + 현재 접속자 전부 포함 (0점도 표시)
+    const ids = new Set([...Object.keys(scores), ...players.map(p => p.id)]);
+    const ranking = [...ids].map(id => ({
+      id,
+      name: nameMap[id] || "(나간 참가자)",
+      themeLine: themeMap[id] || null,
+      score: scores[id] || 0,
+    })).sort((a, b) => b.score - a.score || String(a.name).localeCompare(String(b.name)));
     State.versus = false;
-    window.onVersusGameEnd({ score: finalScore });
+    window.onVersusGameEnd({ ranking, myId: (typeof Versus !== "undefined" && Versus.myId) ? Versus.myId() : null });
   }
 }
 
@@ -772,6 +808,8 @@ document.addEventListener("DOMContentLoaded", () => {
 
   const input = $("#answer-input");
   input.addEventListener("input", updateSuggestions);
+  // 대전: 입력중 상태를 presence로 전파 (디바운스)
+  input.addEventListener("input", onVersusTyping);
   input.addEventListener("keydown", e => {
     if (e.isComposing) return; // 한글 조합 중에는 무시
     const hasSuggest = State.suggestions.length > 0;
@@ -823,4 +861,6 @@ window.VersusGame = {
   },
   isVersus: () => State.versus,
   currentIndex: () => State.vsIndex,
+  getScores: () => State.vsScores,            // {id: score}
+  lastWinnerId: () => State.vsLastWinner,     // 직전 문제 정답자(초록 반짝용)
 };

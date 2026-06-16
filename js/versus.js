@@ -31,8 +31,10 @@ const Versus = (() => {
 
   const playerListeners = [];
   const hostListeners = [];
+  const backToLobbyListeners = [];
   function onPlayersChange(fn) { playerListeners.push(fn); }
   function onHostChange(fn) { hostListeners.push(fn); }
+  function onBackToLobby(fn) { backToLobbyListeners.push(fn); }
   function notifyPlayers() { playerListeners.forEach(fn => { try { fn(Room.players); } catch (e) {} }); }
   let lastNotifiedHost = undefined;
   function notifyHostIfChanged() {
@@ -107,8 +109,17 @@ const Versus = (() => {
     });
     return list;
   }
-  function myMeta() { return { id: myId(), name: Room.myName, themeLine: myThemeLine(), joinedAt: mySessionJoinedAt }; }
+  let myTyping = false;
+  function myMeta() { return { id: myId(), name: Room.myName, themeLine: myThemeLine(), joinedAt: mySessionJoinedAt, typing: myTyping }; }
   function hostPresent() { return !!Room.hostId && Room.players.some(p => p.id === Room.hostId); }
+
+  // 내 "입력중" 상태를 presence로 전파 (디바운스는 호출측에서)
+  function setTyping(on) {
+    on = !!on;
+    if (on === myTyping) return;
+    myTyping = on;
+    if (Room.channel) { try { Room.channel.track(myMeta()); } catch (e) {} }
+  }
 
   // presence 동기화 시
   function handleSync() {
@@ -195,6 +206,10 @@ const Versus = (() => {
     });
     channel.on("broadcast", { event: "vs_winner" }, ({ payload }) => {
       if (payload) applyWinner(payload);
+    });
+    // 방장이 "대기실로" 누르면 모두 대기실로 복귀
+    channel.on("broadcast", { event: "back_to_lobby" }, () => {
+      backToLobbyListeners.forEach(fn => { try { fn(); } catch (e) {} });
     });
 
     Room.channel = channel;
@@ -365,6 +380,16 @@ const Versus = (() => {
     return { ok: true };
   }
 
+  // 방장이 결과 화면에서 "대기실로"를 누르면: 상태 되돌리고 모두 대기실로
+  async function backToLobby() {
+    if (!isHost()) return { ok: false };
+    const c = client();
+    if (c && Room.code) { try { await c.from("rooms").update({ status: "waiting" }).eq("code", Room.code); } catch (e) {} }
+    if (Room.channel) { try { await Room.channel.send({ type: "broadcast", event: "back_to_lobby", payload: {} }); } catch (e) {} }
+    backToLobbyListeners.forEach(fn => { try { fn(); } catch (e) {} });
+    return { ok: true };
+  }
+
   /* ---------- 선착순 정답 (방장이 심판) ----------
      문제: 각자 자기 정답을 로컬에서 바로 처리하면 동시 정답 시 둘 다 득점.
      해결: 정답을 맞히면 '주장(claim)'만 보내고, 방장이 문제별 첫 주장자를
@@ -455,6 +480,7 @@ const Versus = (() => {
     makeCode, guestName, resolveMyName, myThemeLine, inviteLink, myId,
     createRoom, joinRoom, leaveRoom, transferHost, quickLeave, retrack,
     updateSettings, startGame, onGameStart, sendCorrect, sendTimeout,
+    setTyping, backToLobby, onBackToLobby,
     onPlayersChange, onHostChange, getPlayers: () => Room.players,
     isHost, getHostId,
   };
