@@ -1,23 +1,43 @@
 /* ============================================================
-   versus.js — 대전 모드 (1단계: 방 생성 / 입장 / 대기실 뼈대)
+   versus.js — 대전 모드 (2단계: 실시간 참가자 목록 = Presence)
    ------------------------------------------------------------
    - Supabase의 rooms 테이블로 방을 만들고 코드로 입장한다.
-   - 실시간 참가자/게임 동기화(Presence/Broadcast)는 다음 단계에서 추가.
+   - Realtime Presence로 "지금 방에 누가 있는지"를 실시간 추적한다.
+   - 게임 시작/정답 동기화(Broadcast)는 다음 단계에서 추가.
    - Account.getClient() 로 Supabase 클라이언트를 빌려 쓴다.
    ============================================================ */
 
 const Versus = (() => {
   const $ = sel => document.querySelector(sel);
 
-  // 현재 방 상태 (이 단계에서는 최소한만)
+  // 현재 방 상태
   const Room = {
     code: null,
     isHost: false,
     myName: null,       // 화면에 보일 내 이름 (닉네임 또는 Guest #1234)
     data: null,         // rooms 테이블의 행
+    channel: null,      // Realtime 채널
+    players: [],        // 현재 참가자 목록 [{id,name,themeLine,isHost}]
   };
 
+  // presence 변경 시 UI가 다시 그리도록 등록하는 콜백들
+  const playerListeners = [];
+  function onPlayersChange(fn) { playerListeners.push(fn); }
+  function notifyPlayers() { playerListeners.forEach(fn => { try { fn(Room.players); } catch (e) {} }); }
+
   function client() { return Account.getClient ? Account.getClient() : null; }
+
+  // 이 브라우저 세션의 고유 id (게스트도 자기 자신을 식별하기 위함)
+  function myId() {
+    let id = sessionStorage.getItem("vsClientId");
+    if (!id) {
+      id = "u_" + Math.random().toString(36).slice(2) + Date.now().toString(36);
+      sessionStorage.setItem("vsClientId", id);
+    }
+    // 로그인 사용자는 user id를 우선 사용(여러 기기 구분에 유리)
+    const uid = Account.getUserId && Account.getUserId();
+    return uid || id;
+  }
 
   /* ---------- 이름/코드 유틸 ---------- */
   // 헷갈리는 글자(0,O,1,I,L) 제외한 코드 문자셋
@@ -57,6 +77,77 @@ const Versus = (() => {
     return base + "?room=" + code;
   }
 
+  /* ---------- Realtime 채널 (Presence) ---------- */
+  // presence state를 평탄한 참가자 배열로 변환
+  function buildPlayers(state) {
+    const list = [];
+    const seen = new Set();
+    for (const key in state) {
+      const metas = state[key];
+      if (!Array.isArray(metas) || !metas[0]) continue;
+      const m = metas[0];
+      if (!m || !m.id || !m.name) continue;     // 유효한 참가자만
+      if (seen.has(m.id)) continue;             // 중복 방지
+      seen.add(m.id);
+      list.push(m);
+    }
+    // 방장을 맨 앞으로, 그다음 이름순
+    list.sort((a, b) => (b.isHost - a.isHost) || String(a.name).localeCompare(String(b.name)));
+    return list;
+  }
+
+  // 방 채널에 접속하고 내 존재를 track
+  async function connectChannel() {
+    const c = client();
+    if (!c || !Room.code) return false;
+
+    // 기존 채널 정리
+    if (Room.channel) { try { await c.removeChannel(Room.channel); } catch (e) {} Room.channel = null; }
+
+    const me = {
+      id: myId(),
+      name: Room.myName,
+      themeLine: myThemeLine(),
+      isHost: !!Room.isHost,
+    };
+
+    const channel = c.channel("room:" + Room.code, {
+      config: { presence: { key: me.id } },
+    });
+
+    // presence 동기화: 전체 목록이 바뀔 때마다
+    channel.on("presence", { event: "sync" }, () => {
+      Room.players = buildPlayers(channel.presenceState());
+      notifyPlayers();
+    });
+    // (join/leave도 sync를 유발하므로 위 핸들러로 충분하지만, 명시적으로 둬도 무방)
+
+    Room.channel = channel;
+
+    await new Promise((resolve) => {
+      channel.subscribe(async (status) => {
+        if (status === "SUBSCRIBED") {
+          await channel.track(me);   // 내 존재를 방에 알림
+          resolve(true);
+        }
+      });
+      // 안전장치: 일정 시간 내 응답 없으면 그냥 진행
+      setTimeout(() => resolve(false), 4000);
+    });
+    return true;
+  }
+
+  // 채널에서 나가기(untrack + 구독 해제)
+  async function disconnectChannel() {
+    const c = client();
+    if (c && Room.channel) {
+      try { await Room.channel.untrack(); } catch (e) {}
+      try { await c.removeChannel(Room.channel); } catch (e) {}
+    }
+    Room.channel = null;
+    Room.players = [];
+  }
+
   /* ---------- 방 생성 ---------- */
   async function createRoom() {
     const c = client();
@@ -80,6 +171,7 @@ const Versus = (() => {
         Room.code = code;
         Room.isHost = true;
         Room.data = row;
+        await connectChannel();   // 실시간 채널 접속 + 내 존재 track
         return { ok: true, code };
       }
       // 코드 충돌(기본키 중복)이면 다시 시도, 그 외 오류는 즉시 반환
@@ -107,22 +199,25 @@ const Versus = (() => {
     Room.isHost = (Account.getUserId && Account.getUserId()) && data.host_id === Account.getUserId();
     Room.myName = resolveMyName();
     Room.data = data;
+    await connectChannel();   // 실시간 채널 접속 + 내 존재 track
     return { ok: true, code };
   }
 
   /* ---------- 방 나가기 ---------- */
   async function leaveRoom() {
     const c = client();
+    await disconnectChannel();   // 실시간 채널에서 먼저 빠짐
     // 방장이 나가면 방 삭제(이 단계 한정 간단 처리). 참가자면 그냥 떠남.
     if (c && Room.code && Room.isHost) {
       await c.from("rooms").delete().eq("code", Room.code);
     }
-    Room.code = null; Room.isHost = false; Room.data = null;
+    Room.code = null; Room.isHost = false; Room.data = null; Room.players = [];
   }
 
   return {
     Room,
-    makeCode, guestName, resolveMyName, myThemeLine, inviteLink,
+    makeCode, guestName, resolveMyName, myThemeLine, inviteLink, myId,
     createRoom, joinRoom, leaveRoom,
+    onPlayersChange, getPlayers: () => Room.players,
   };
 })();

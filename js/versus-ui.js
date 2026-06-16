@@ -67,6 +67,39 @@
   }
 
   /* ---------- 대기실 ---------- */
+  function lineColor(id) {
+    if (typeof lineById === "function") { const l = lineById(id); if (l) return l.color; }
+    return "#0052A4";
+  }
+
+  // 참가자 한 명을 닉네임 태그로
+  function playerTag(pl) {
+    const color = lineColor(pl.themeLine);
+    const crown = pl.isHost ? `<span class="vs-crown" title="방장">👑</span>` : "";
+    const meMark = (pl.id === Versus.myId()) ? `<span class="vs-me">나</span>` : "";
+    return `<div class="vs-player">
+      ${crown}
+      <span class="nick-tag static" style="--theme:${color}">
+        <span class="nick-dot"></span>
+        <span class="nick-text">${escapeHtml(pl.name)}</span>
+      </span>
+      ${meMark}
+    </div>`;
+  }
+
+  function renderPlayers(players) {
+    const box = $("#vs-players");
+    if (!box) return;
+    if (!players || players.length === 0) {
+      box.innerHTML = `<p class="muted">참가자를 기다리는 중…</p>`;
+      return;
+    }
+    const count = players.length;
+    box.innerHTML =
+      `<div class="vs-players-count">현재 ${count}명 접속 중</div>` +
+      `<div class="vs-players-list">${players.map(playerTag).join("")}</div>`;
+  }
+
   function enterLobby() {
     const R = Versus.Room;
     $("#vs-lobby-code").textContent = R.code;
@@ -80,8 +113,8 @@
     // 내 이름 표시
     $("#vs-my-name").textContent = R.myName;
 
-    // (다음 단계) 실시간 참가자 목록 — 지금은 안내만
-    $("#vs-players").innerHTML = `<p class="muted">실시간 참가자 목록은 곧 추가될 거예요. 지금은 방 생성/입장까지 동작해요.</p>`;
+    // 실시간 참가자 목록 렌더 (현재 상태 즉시 + 변경 구독)
+    renderPlayers(Versus.getPlayers());
 
     showScreen("#vs-lobby-screen");
   }
@@ -113,6 +146,9 @@
     $("#btn-versus")?.addEventListener("click", openEntry);
     $("#vs-create-btn")?.addEventListener("click", doCreate);
     $("#vs-join-btn")?.addEventListener("click", () => doJoin());
+
+    // 참가자 목록이 실시간으로 바뀌면 다시 그림
+    Versus.onPlayersChange(renderPlayers);
     $("#vs-code-input")?.addEventListener("keydown", e => { if (e.key === "Enter") doJoin(); });
     // 코드 입력은 자동 대문자
     $("#vs-code-input")?.addEventListener("input", e => {
