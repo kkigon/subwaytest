@@ -198,8 +198,12 @@ const Versus = (() => {
         try { Room.channel.send({ type: "broadcast", event: "host_set", payload: { hostId: Room.hostId, hostName: Room.data && Room.data.host_name } }); } catch (e) {}
       }
     });
-    // ※ 게임 상태(시작/스냅샷/정답/대기실복귀)는 더 이상 브로드캐스트로 다루지 않는다.
-    //    DB(game_states)가 단일 진실이고, 아래 gs 채널의 Postgres Changes로 받는다.
+    // ★ 게임 상태 저지연 전파: 전이를 일으킨 클라가 그 결과를 즉시 브로드캐스트 → 모두 한 홉에 반영.
+    //    DB(game_states)는 여전히 단일 진실/심판이고, Postgres Changes·vs_sync는 안전망으로 유지.
+    //    같은 rev는 중복제거되므로 브로드캐스트/Changes/RPC응답이 겹쳐도 충돌 없음.
+    channel.on("broadcast", { event: "vs_state" }, ({ payload }) => {
+      if (payload && payload.snap) applyState(payload.snap);
+    });
 
     Room.channel = channel;
     await new Promise((resolve) => {
@@ -446,6 +450,18 @@ const Versus = (() => {
     try { c.rpc("vs_join", { p_room: Room.code, p_player_id: myId(), p_name: Room.myName, p_theme: myThemeLine() }); } catch (e) {}
   }
 
+  // ★ 저지연 전파: RPC로 새 상태를 받은 클라가 그걸 즉시 브로드캐스트(더 새로운 rev만).
+  //    모두가 한 홉에 같은 상태를 받는다. (DB는 진실, 이건 가속 레이어)
+  let lastPushedRev = -1;
+  function pushState(snap) {
+    if (!snap || typeof snap.rev !== "number") return;
+    if (snap.rev <= lastPushedRev) return;   // 이미 전파했거나 더 오래된 상태면 스킵(스팸 방지)
+    lastPushedRev = snap.rev;
+    if (Room.channel) {
+      try { Room.channel.send({ type: "broadcast", event: "vs_state", payload: { snap } }); } catch (e) {}
+    }
+  }
+
   /* ---------- 시계/동기화 와처 ----------
      • tick: 마감시각이 지났으면 서버에 진행을 '부탁'(멱등). 평소엔 로컬 no-op.
      • sync: 안전망. Postgres Changes가 꺼져 있어도 주기적으로 현재 행을 읽어 따라잡음.
@@ -468,15 +484,16 @@ const Versus = (() => {
     if (s.phase === "ended" || s.phase === "lobby") return;   // 진행할 게 없음
     const now = Date.now();
     let due = false;
-    if (s.phase === "countdown") due = now >= s.playAt;
-    else if (s.phase === "playing") due = (now >= s.qEndsAt) || (now >= s.gameEndsAt);
+    if (s.gameEndsAt && now >= s.gameEndsAt) due = true;       // ★ 메인 타이머 끝 → 어느 단계든 종료
+    else if (s.phase === "countdown") due = now >= s.playAt;
+    else if (s.phase === "playing") due = now >= s.qEndsAt;
     else if (s.phase === "reveal") due = now >= s.revealUntil;
     if (!due) return;
-    if (tickInFlight || (now - lastTickAt) < 200) return;     // 과도한 호출 방지
+    if (tickInFlight || (now - lastTickAt) < 120) return;     // 과도한 호출 방지
     tickInFlight = true; lastTickAt = now;
     try {
       const c = client();
-      if (c) { const { data, error } = await c.rpc("vs_tick", { p_room: Room.code }); if (!error && data) applyState(snapFromRow(data)); }
+      if (c) { const { data, error } = await c.rpc("vs_tick", { p_room: Room.code }); if (!error && data) { const ns = snapFromRow(data); applyState(ns); pushState(ns); } }
     } catch (e) {}
     tickInFlight = false;
   }
@@ -515,7 +532,7 @@ const Versus = (() => {
       });
       if (error) { console.warn("[Versus] 게임 시작 실패", error.message); return { ok: false, message: error.message }; }
       try { await c.from("rooms").update({ status: "playing" }).eq("code", Room.code); } catch (e) {}
-      if (data) applyState(snapFromRow(data));   // 내 화면 즉시
+      if (data) { const ns = snapFromRow(data); applyState(ns); pushState(ns); }   // 내 화면 즉시 + 모두에게 즉시 전파
       ensureWatcher();
       return { ok: true };
     } catch (e) {
@@ -534,7 +551,7 @@ const Versus = (() => {
         p_room: Room.code, p_index: index,
         p_player_id: myId(), p_player_name: Room.myName,
       });
-      if (!error && data) applyState(snapFromRow(data));   // 이겼든 졌든 최신 상태 즉시 반영
+      if (!error && data) { const ns = snapFromRow(data); applyState(ns); pushState(ns); }   // 이겼든 졌든 최신 상태 즉시 반영 + 전파
     } catch (e) {}
   }
 
@@ -544,7 +561,7 @@ const Versus = (() => {
     const c = client();
     if (c && Room.code) {
       try { await c.from("rooms").update({ status: "waiting" }).eq("code", Room.code); } catch (e) {}
-      try { const { data } = await c.rpc("vs_lobby", { p_room: Room.code }); if (data) applyState(snapFromRow(data)); } catch (e) {}
+      try { const { data } = await c.rpc("vs_lobby", { p_room: Room.code }); if (data) { const ns = snapFromRow(data); applyState(ns); pushState(ns); } } catch (e) {}
     }
     if (inGame) { inGame = false; startedSig = null; }
     backToLobbyListeners.forEach(fn => { try { fn(); } catch (e) {} });

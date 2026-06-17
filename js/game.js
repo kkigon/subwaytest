@@ -199,7 +199,7 @@ function startVersusGame(config) {
 
   $("#score").textContent = "0";
   $("#hint-count").textContent = State.hintsLeft;
-  $("#btn-hint").disabled = true;     // 대전에선 힌트 비활성(공정성)
+  $("#btn-hint").disabled = State.hintsLeft <= 0;   // 대전에서도 힌트 사용 가능(각자 3개)
   $("#hint-display").classList.remove("show");
 
   document.body.classList.remove("in-versus");
@@ -306,6 +306,9 @@ function applyVersusState(snap) {
       input.value = "";
       input.disabled = false;
       State.answeredThisQ = false;
+      // 새 문제 → 이전 힌트 숨기고, 남은 힌트 있으면 버튼 다시 활성(힌트는 게임당 3개 공용)
+      $("#hint-display").classList.remove("show");
+      $("#btn-hint").disabled = State.hintsLeft <= 0;
       if (snap.phase === "playing") { SubwayMap.setInteractive(true); setTimeout(() => input.focus(), 50); }
     }
   }
