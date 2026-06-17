@@ -450,6 +450,22 @@ const Versus = (() => {
     try { c.rpc("vs_join", { p_room: Room.code, p_player_id: myId(), p_name: Room.myName, p_theme: myThemeLine() }); } catch (e) {}
   }
 
+  // ★ 무조건 종료: 메인 타이머가 0이 되면 클라가 직접 호출. 서버 시계 판단을 기다리지 않는다.
+  //   (reveal 중 종료 시 멈추던 버그 해결) 멱등 — 여러 번/여러 명이 불러도 안전.
+  let endInFlight = false;
+  async function forceEnd() {
+    if (endInFlight) return;
+    if (lastSnapshot && lastSnapshot.phase === "ended") return;   // 이미 끝났으면 스킵
+    endInFlight = true;
+    try {
+      const c = client();
+      if (c && Room.code) {
+        const { data, error } = await c.rpc("vs_end", { p_room: Room.code });
+        if (!error && data) { const ns = snapFromRow(data); applyState(ns); pushState(ns); }
+      }
+    } catch (e) {}
+    endInFlight = false;   // 실패 시 다음 틱에서 재시도(끝날 때까지)
+  }
   // ★ 저지연 전파: RPC로 새 상태를 받은 클라가 그걸 즉시 브로드캐스트(더 새로운 rev만).
   //    모두가 한 홉에 같은 상태를 받는다. (DB는 진실, 이건 가속 레이어)
   let lastPushedRev = -1;
@@ -483,9 +499,10 @@ const Versus = (() => {
     if (!s || !Room.code) return;
     if (s.phase === "ended" || s.phase === "lobby") return;   // 진행할 게 없음
     const now = Date.now();
+    // ★ 메인 타이머 끝 → 무조건 즉시 종료. 서버 시계 판단/공개 단계와 무관하게 끝낸다.
+    if (s.gameEndsAt && now >= s.gameEndsAt) { forceEnd(); return; }
     let due = false;
-    if (s.gameEndsAt && now >= s.gameEndsAt) due = true;       // ★ 메인 타이머 끝 → 어느 단계든 종료
-    else if (s.phase === "countdown") due = now >= s.playAt;
+    if (s.phase === "countdown") due = now >= s.playAt;
     else if (s.phase === "playing") due = now >= s.qEndsAt;
     else if (s.phase === "reveal") due = now >= s.revealUntil;
     if (!due) return;
@@ -612,7 +629,7 @@ const Versus = (() => {
     makeCode, guestName, resolveMyName, myThemeLine, inviteLink, myId,
     createRoom, joinRoom, leaveRoom, transferHost, quickLeave, retrack,
     updateSettings, startGame, onGameStart, onState, sendAnswer,
-    setTyping, backToLobby, onBackToLobby,
+    setTyping, backToLobby, onBackToLobby, forceEnd,
     onPlayersChange, onHostChange, getPlayers: () => Room.players,
     isHost, getHostId,
   };

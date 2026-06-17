@@ -254,6 +254,8 @@ function startVersusDisplayTimer() {
       const mm = Math.floor(s / 60), ss = s % 60;
       timerEl.textContent = `${mm}:${String(ss).padStart(2, "0")}`;
       timerEl.classList.toggle("danger", remain <= 10000);
+      // ★ 0이 되면 무조건 게임 종료를 요청(틱 루프와 별개의 안전 트리거). 멱등.
+      if (remain <= 0 && typeof Versus !== "undefined" && Versus.forceEnd) { try { Versus.forceEnd(); } catch (e) {} }
     }
     // 문제별 타이머(진행 중일 때만)
     if (qBadge) {
