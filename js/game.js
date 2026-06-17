@@ -192,6 +192,12 @@ function startVersusGame(config) {
   State.vsLastWinner = null;
   State.vsPhase = "countdown";
   State.score = 0;
+  // ★ 이전 게임 잔재 리셋(안 하면 두 번째 게임이 종료/진행이 안 됨)
+  State._vsEnded = false;
+  State._revealedIndex = null;
+  State.answeredThisQ = false;
+  State.vsGameEndsAt = 0;
+  State.vsQEndsAt = 0;
 
   State.hintsLeft = HINTS_PER_GAME;
   State.playing = true;

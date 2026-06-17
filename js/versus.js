@@ -423,6 +423,8 @@ const Versus = (() => {
       const sig = snap.playAt + ":" + snap.order.length;
       if (!inGame || startedSig !== sig) {
         inGame = true; startedSig = sig;
+        // ★ 이전 게임에서 남았을 수 있는 in-flight 플래그 정리 → 두 번째 게임 시계/종료가 막히지 않게
+        tickInFlight = false; endInFlight = false; lastTickAt = 0;
         if (Room.data) Room.data.status = "playing";
         registerSelf();   // 내 이름/색을 DB names에 등록(나가도 순위에 남게)
         const cfg = {
