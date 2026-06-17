@@ -277,10 +277,15 @@ const Versus = (() => {
     if (hostCheckTimer) { clearTimeout(hostCheckTimer); hostCheckTimer = null; }
     stopReconciler();
     stopWatcher();
-    if (c && Room.channel) { try { await Room.channel.untrack(); } catch (e) {} try { await c.removeChannel(Room.channel); } catch (e) {} }
-    if (c && Room.dbChannel) { try { await c.removeChannel(Room.dbChannel); } catch (e) {} }
-    if (c && Room.gsChannel) { try { await c.removeChannel(Room.gsChannel); } catch (e) {} }
+    // ★ 채널 해제를 '기다리지 않는다'. 참조를 즉시 끊고 실제 해제는 백그라운드로.
+    //   (untrack/removeChannel이 느리거나 멈춰도 나가기/재접속이 막히지 않게)
+    const ch = Room.channel, dbch = Room.dbChannel, gsch = Room.gsChannel;
     Room.channel = null; Room.dbChannel = null; Room.gsChannel = null;
+    if (c) {
+      try { if (ch) { ch.untrack(); c.removeChannel(ch); } } catch (e) {}
+      try { if (dbch) c.removeChannel(dbch); } catch (e) {}
+      try { if (gsch) c.removeChannel(gsch); } catch (e) {}
+    }
     if (!keepList) { Room.players = []; lastNotifiedHost = undefined; }
   }
 

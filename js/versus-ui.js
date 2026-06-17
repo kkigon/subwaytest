@@ -337,10 +337,10 @@
   }
 
   async function doLeave() {
-    await Versus.leaveRoom();
+    try { await Versus.leaveRoom(); } catch (e) {}   // 정리 실패해도 홈 복귀는 무조건 진행
     // URL의 ?room 파라미터 제거
     if (location.search.includes("room=")) {
-      history.replaceState(null, "", location.pathname);
+      try { history.replaceState(null, "", location.pathname); } catch (e) {}
     }
     closeVersus();
   }
