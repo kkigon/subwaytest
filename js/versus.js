@@ -361,7 +361,8 @@ const Versus = (() => {
 
   // DB 행 → 게임이 쓰는 스냅샷(기존 game.js가 그대로 먹는 모양). 시각은 epoch ms로 변환.
   function snapFromRow(row) {
-    if (!row) return null;
+    // 빈/유령 행 방어: 진짜 행은 phase가 항상 있다(NOT NULL DEFAULT). phase 없으면 '상태 없음'으로 취급.
+    if (!row || !row.phase) return null;
     const ms = v => (v ? new Date(v).getTime() : 0);
     return {
       rev: row.rev,
@@ -389,8 +390,11 @@ const Versus = (() => {
   let lastSnapshot = null;
   let inGame = false;        // 현재 게임 화면에 들어와 있나(시작 1회 감지용)
   let startedSig = null;     // 이번 게임의 식별자(playAt) — onGameStart 1회만 쏘기 위함
+  const KNOWN_PHASES = ["lobby", "countdown", "playing", "reveal", "ended"];
   function applyState(snap) {
     if (!snap) return;
+    // ★ 빈/이상 상태 방어: 알 수 없는 phase면 게임 화면에 진입하지 않는다(방 만들자마자 가짜 시작 차단).
+    if (KNOWN_PHASES.indexOf(snap.phase) === -1) { ensureWatcher(); return; }
     if (typeof snap.rev === "number") {
       if (snap.rev < lastRev) return;                     // 더 오래된 상태면 무시
       if (snap.rev === lastRev && lastRev !== -1) return; // 같은 상태 중복이면 무시
@@ -409,16 +413,24 @@ const Versus = (() => {
     }
 
     // 새 게임 시작 감지 → 모두 같은 설정/문제로 게임 화면 진입(카운트다운). 1회만.
-    const sig = snap.playAt + ":" + ((snap.order && snap.order.length) || 0);
-    if (!inGame || startedSig !== sig) {
-      inGame = true; startedSig = sig;
-      if (Room.data) Room.data.status = "playing";
-      registerSelf();   // 내 이름/색을 DB names에 등록(나가도 순위에 남게)
-      const cfg = {
-        region: snap.region, mode: "all", lineIds: snap.lineIds,
-        duration: snap.duration, order: snap.order, playAt: snap.playAt,
-      };
-      gameStartListeners.forEach(fn => { try { fn(cfg); } catch (e) {} });
+    // ★ '진짜' 시작일 때만: 시작시각(playAt)과 문제목록(order)이 있어야 한다.
+    const hasGame = snap.playAt > 0 && Array.isArray(snap.order) && snap.order.length > 0;
+    if (hasGame) {
+      const sig = snap.playAt + ":" + snap.order.length;
+      if (!inGame || startedSig !== sig) {
+        inGame = true; startedSig = sig;
+        if (Room.data) Room.data.status = "playing";
+        registerSelf();   // 내 이름/색을 DB names에 등록(나가도 순위에 남게)
+        const cfg = {
+          region: snap.region, mode: "all", lineIds: snap.lineIds,
+          duration: snap.duration, order: snap.order, playAt: snap.playAt,
+        };
+        gameStartListeners.forEach(fn => { try { fn(cfg); } catch (e) {} });
+      }
+    } else if (!inGame) {
+      // 아직 시작 정보가 없는 상태면 그리지 않고 대기(빈 행 방어).
+      ensureWatcher();
+      return;
     }
 
     // 화면 반영(게임 진행/공개/종료 전부 game.js의 applyVersusState가 처리)
