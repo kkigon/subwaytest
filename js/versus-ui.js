@@ -34,9 +34,17 @@
   }
 
   function closeVersus() {
-    showScreen(null);
-    // 홈으로 복귀
-    document.body.classList.remove("in-versus");
+    showScreen(null);                 // 대전 오버레이 숨김 + in-versus 제거
+    document.body.classList.remove("in-versus", "versus-mode");
+    if (typeof State !== "undefined") State.versus = false;
+    // ★ 홈 화면 완전 복원: 게임/엔딩 상태 클래스 정리 + 홈 배경 지도 재구성.
+    //   (게임 끝난 결과화면에서 나가도 빈 지도가 아니라 홈 메뉴가 뜨도록)
+    if (typeof goHome === "function") {
+      try { goHome(); } catch (e) {}
+    } else {
+      document.body.classList.remove("in-game", "at-end", "studying", "endless-mode");
+      document.body.classList.add("at-home");
+    }
   }
 
   // Account(로그인/프로필) 로딩이 끝날 때까지 잠깐 기다린다.
