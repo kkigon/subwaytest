@@ -167,10 +167,31 @@ const Versus = (() => {
 
   // 방장 정보 적용(공통)
   function applyHost(hostId, hostName) {
+    const wasHost = (Room.hostId === myId());
     Room.hostId = hostId || null;
     if (Room.data) { Room.data.host_id = Room.hostId; if (hostName !== undefined) Room.data.host_name = hostName; }
     notifyHostIfChanged();
     notifyPlayers();   // 왕관 위치 갱신
+
+    // ★ 내가 방장이 됐는데 게임이 진행 중이면(스냅샷 보유) 게임 루프를 이어받는다.
+    const amHostNow = (Room.hostId === myId());
+    if (amHostNow && !wasHost && !hostGame && lastSnapshot && lastSnapshot.phase && lastSnapshot.phase !== "ended") {
+      takeOverHostGame(lastSnapshot);
+    }
+  }
+
+  // 마지막 스냅샷으로부터 방장 게임 상태를 복원해 루프를 이어받는다(방장 교체 대비)
+  function takeOverHostGame(snap) {
+    hostGame = {
+      order: snap.order || [], region: snap.region, lineIds: snap.lineIds, duration: snap.duration,
+      startAt: Date.now(), playAt: snap.playAt || Date.now(),
+      gameEndsAt: snap.gameEndsAt, index: snap.index,
+      qEndsAt: snap.qEndsAt, scores: Object.assign({}, snap.scores || {}),
+      winnerId: snap.winnerId || null, winnerName: snap.winnerName || null,
+      phase: snap.phase, revealUntil: snap.phase === "reveal" ? (Date.now() + 600) : 0,
+      names: Object.assign({}, snap.names || {}),
+    };
+    startHostLoop();
   }
 
   /* ---------- Realtime 연결 ---------- */
@@ -196,13 +217,17 @@ const Versus = (() => {
         try { Room.channel.send({ type: "broadcast", event: "host_set", payload: { hostId: Room.hostId, hostName: Room.data && Room.data.host_name } }); } catch (e) {}
       }
     });
-    // 게임 시작 신호: 방장이 보낸 설정+문제순서로 모두 동시에 게임 시작
+    // 게임 시작 신호: 방장이 보낸 설정+문제순서로 모두 동시에 게임 화면 진입
     channel.on("broadcast", { event: "game_start" }, ({ payload }) => {
       if (payload) startGameFromSignal(payload);
     });
-    // 선착순 정답: 정답자가 직접 방송한 승자 결과를 모두 반영(문제별 첫 승자만 채택)
-    channel.on("broadcast", { event: "vs_winner" }, ({ payload }) => {
-      if (payload) applyWinner(payload);
+    // 상태 스냅샷: 모두 화면에 반영(자가치유). 참가자/방장 공통.
+    channel.on("broadcast", { event: "vs_state" }, ({ payload }) => {
+      if (payload) applyState(payload);
+    });
+    // 참가자의 답: 방장만 접수해서 채점
+    channel.on("broadcast", { event: "vs_answer" }, ({ payload }) => {
+      if (payload && isHost()) hostReceiveAnswer(payload);
     });
     // 방장이 "대기실로" 누르면 모두 대기실로 복귀
     channel.on("broadcast", { event: "back_to_lobby" }, () => {
@@ -332,119 +357,204 @@ const Versus = (() => {
     return { ok: true };
   }
 
-  // 게임 시작 신호 수신 시 모두가 실행 (방장 자신도 self:true로 받음)
+  /* ============================================================
+     호스트 권위 모델 (authoritative host)
+     ------------------------------------------------------------
+     실제 멀티플레이어 퀴즈(Kahoot/HQ 등)와 같은 방식:
+     • 방장(host)이 게임의 단일 진실. 점수·현재 문제·타이머를 방장이 소유.
+     • 방장은 "전체 상태 스냅샷"(vs_state)을 주기적으로(약 1초) + 변경 시 즉시 방송.
+     • 참가자는 자기 답을 방장에게 전송(vs_answer)만 함. 채점/승자판정은 방장만.
+     • 모든 화면은 스냅샷을 '그대로 표시'. 메시지가 유실돼도 다음 스냅샷이 교정 → 자가치유.
+     • 타이머는 방장이 준 절대시각(questionEndsAt)으로 카운트 → 모두 동기화.
+     ============================================================ */
   const gameStartListeners = [];
+  const stateListeners = [];
   let lastStartedAt = 0;
-  let vsDecidedWinner = {};   // index -> 채택된 승자 결과 {winnerId,winnerName,t}
-  let vsAppliedIndex = -1;    // 내 화면에 이미 반영한 문제 번호
   function onGameStart(fn) { gameStartListeners.push(fn); }
-  function startGameFromSignal(payload) {
-    // 같은 시작 신호를 중복 처리하지 않도록 startedAt으로 디듀프
-    if (payload && payload.startedAt && payload.startedAt === lastStartedAt) return;
-    if (payload && payload.startedAt) lastStartedAt = payload.startedAt;
-    vsDecidedWinner = {};   // 승자 판정 기록 초기화
-    vsAppliedIndex = -1;    // 내 반영 기록 초기화
-    if (Room.data) Room.data.status = "playing";
-    gameStartListeners.forEach(fn => { try { fn(payload); } catch (e) {} });
-  }
+  function onState(fn) { stateListeners.push(fn); }
 
-  // 방장이 "게임 시작"을 누르면 호출: 문제 순서 생성 + 모두에게 broadcast
+  // ----- 방장이 소유하는 게임 상태 (참가자에겐 null) -----
+  let hostGame = null;   // { order, region, lineIds, duration, gameEndsAt, index, qEndsAt, scores:{}, winnerId, winnerName, phase, names:{} }
+  let hostTickTimer = null;
+  let hostSnapshotTimer = null;
+
+  const VS_Q_SECONDS = 10;       // 문제별 제한시간
+  const VS_REVEAL_MS = 1500;     // 정답 공개 후 다음 문제까지
+
+  // 방장이 "게임 시작"을 누르면: 상태 초기화하고 게임 루프 시작
   async function startGame(settings) {
     if (!Room.code || !isHost()) return { ok: false, message: "방장만 시작할 수 있어요." };
     const region = settings.region || (Room.data && Room.data.region) || "seoul";
     const mode = settings.mode || "all";
     const customLines = settings.customLines || [];
-    const playMode = settings.playMode || "timed";
     const duration = settings.duration || 60;
 
-    // 출제 노선 id와 문제 순서를 방장이 생성 (모두 동일하게 쓰도록 broadcast)
     const lineIds = window.VersusGame.resolveLineIds(region, mode, customLines);
     if (!lineIds || lineIds.length === 0) return { ok: false, message: "노선을 선택해주세요." };
     const order = window.VersusGame.buildOrder(region, lineIds);
 
-    const payload = { region, mode, lineIds, playMode, duration, order, startedAt: Date.now() };
-
-    // 상태를 playing으로 (재접속자가 게임 중임을 알 수 있게)
     const c = client();
     if (c) { try { await c.from("rooms").update({ status: "playing" }).eq("code", Room.code); } catch (e) {} }
 
-    // 모두에게 시작 신호 (self:true라 나도 받아서 같은 경로로 시작)
-    if (Room.channel) {
-      try { await Room.channel.send({ type: "broadcast", event: "game_start", payload }); } catch (e) {}
-    }
-    // 혹시 broadcast 자기수신이 안 되는 경우 대비, 직접도 한 번
-    startGameFromSignal(payload);
+    const now = Date.now();
+    const COUNTDOWN_MS = 3300;   // 시작 카운트다운(클라가 보여줌)
+    hostGame = {
+      order, region, lineIds, duration,
+      startAt: now,
+      playAt: now + COUNTDOWN_MS,                 // 실제 첫 문제 시작 시각
+      gameEndsAt: now + COUNTDOWN_MS + duration * 1000,
+      index: 0,
+      qEndsAt: now + COUNTDOWN_MS + VS_Q_SECONDS * 1000,
+      scores: {}, winnerId: null, winnerName: null,
+      phase: "countdown",                          // countdown → playing → reveal → ended
+      revealUntil: 0,
+      names: {},
+    };
+    // 시작 신호(설정+순서) 방송 — 모두 같은 문제로 게임 화면 진입 + 카운트다운
+    const startPayload = { region, mode, lineIds, duration, order, startedAt: now, playAt: hostGame.playAt };
+    broadcast("game_start", startPayload, 3);
+    startGameFromSignal(startPayload);
+
+    startHostLoop();
     return { ok: true };
+  }
+
+  // 방장 게임 루프: 타이머 감시(문제 시간/정답공개/게임종료) + 스냅샷 송출
+  function startHostLoop() {
+    stopHostLoop();
+    hostTickTimer = setInterval(hostTick, 200);
+    hostSnapshotTimer = setInterval(() => broadcastState(), 1000);
+    // 즉시 1회
+    setTimeout(() => broadcastState(), 50);
+  }
+  function stopHostLoop() {
+    if (hostTickTimer) { clearInterval(hostTickTimer); hostTickTimer = null; }
+    if (hostSnapshotTimer) { clearInterval(hostSnapshotTimer); hostSnapshotTimer = null; }
+  }
+
+  function hostTick() {
+    if (!hostGame || !isHost()) return;
+    const now = Date.now();
+    // 이름 최신화(점수판 표시용)
+    (Room.players || []).forEach(p => { hostGame.names[p.id] = { name: p.name, themeLine: p.themeLine }; });
+
+    if (hostGame.phase === "countdown") {
+      if (now >= hostGame.playAt) { hostGame.phase = "playing"; broadcastState(); }
+      return;
+    }
+    if (hostGame.phase === "playing") {
+      if (now >= hostGame.gameEndsAt) { endHostGame(); return; }
+      // 문제 시간 초과 → 정답 공개(승자 없음)
+      if (now >= hostGame.qEndsAt) {
+        hostGame.phase = "reveal";
+        hostGame.winnerId = null; hostGame.winnerName = null;
+        hostGame.revealUntil = now + VS_REVEAL_MS;
+        broadcastState();
+      }
+      return;
+    }
+    if (hostGame.phase === "reveal") {
+      if (now >= hostGame.revealUntil) {
+        // 다음 문제로
+        const next = hostGame.index + 1;
+        if (next >= hostGame.order.length || now >= hostGame.gameEndsAt) { endHostGame(); return; }
+        hostGame.index = next;
+        hostGame.winnerId = null; hostGame.winnerName = null;
+        hostGame.qEndsAt = Math.min(now + VS_Q_SECONDS * 1000, hostGame.gameEndsAt);
+        hostGame.phase = "playing";
+        broadcastState();
+      }
+      return;
+    }
+  }
+
+  function endHostGame() {
+    if (!hostGame) return;
+    hostGame.phase = "ended";
+    broadcastState();
+    broadcastState();  // 한 번 더(유실 대비)
+    stopHostLoop();
+  }
+
+  // 방장: 참가자(또는 자신)의 정답 접수 → 현재 문제의 첫 정답자만 승자 확정
+  function hostReceiveAnswer(ans) {
+    if (!hostGame || !isHost()) return;
+    if (hostGame.phase !== "playing") return;       // 공개/카운트다운 중엔 무시
+    if (typeof ans.index !== "number" || ans.index !== hostGame.index) return; // 다른 문제
+    if (hostGame.winnerId) return;                  // 이미 승자 있음(선착순)
+    // 승자 확정
+    hostGame.winnerId = ans.playerId;
+    hostGame.winnerName = ans.playerName;
+    hostGame.scores[ans.playerId] = (hostGame.scores[ans.playerId] || 0) + 1;
+    hostGame.phase = "reveal";
+    hostGame.revealUntil = Date.now() + VS_REVEAL_MS;
+    broadcastState();
+  }
+
+  // 방장: 현재 상태를 스냅샷으로 방송
+  function buildSnapshot() {
+    const g = hostGame;
+    return {
+      index: g.index, phase: g.phase,
+      qEndsAt: g.qEndsAt, gameEndsAt: g.gameEndsAt, playAt: g.playAt,
+      winnerId: g.winnerId, winnerName: g.winnerName,
+      scores: g.scores, names: g.names,
+      order: g.order, region: g.region, lineIds: g.lineIds, duration: g.duration,
+      hostId: Room.hostId, ts: Date.now(),
+    };
+  }
+  function broadcastState() {
+    if (!hostGame || !isHost()) return;
+    const snap = buildSnapshot();
+    broadcast("vs_state", snap, 1);
+    applyState(snap);   // 방장 자신도 동일 경로로 반영
+  }
+
+  // 참가자/방장 공통: 스냅샷 수신 → 화면에 반영 (자가치유의 핵심)
+  let lastStateTs = 0;
+  let lastSnapshot = null;
+  function applyState(snap) {
+    if (!snap) return;
+    if (snap.ts && snap.ts < lastStateTs) return;   // 더 오래된 스냅샷이면 무시
+    lastStateTs = snap.ts || Date.now();
+    lastSnapshot = snap;
+    stateListeners.forEach(fn => { try { fn(snap); } catch (e) {} });
+  }
+
+  // 참가자: 내 답을 방장에게 전송 (방장이면 직접 접수)
+  function sendAnswer(index) {
+    const ans = { index, playerId: myId(), playerName: Room.myName, t: Date.now() };
+    if (isHost()) { hostReceiveAnswer(ans); return; }
+    broadcast("vs_answer", ans, 3);   // 유실 대비 3회
+  }
+
+  function startGameFromSignal(payload) {
+    if (payload && payload.startedAt && payload.startedAt === lastStartedAt) return;
+    if (payload && payload.startedAt) lastStartedAt = payload.startedAt;
+    if (Room.data) Room.data.status = "playing";
+    lastStateTs = 0;
+    gameStartListeners.forEach(fn => { try { fn(payload); } catch (e) {} });
   }
 
   // 방장이 결과 화면에서 "대기실로"를 누르면: 상태 되돌리고 모두 대기실로
   async function backToLobby() {
     if (!isHost()) return { ok: false };
+    hostGame = null; stopHostLoop();
     const c = client();
     if (c && Room.code) { try { await c.from("rooms").update({ status: "waiting" }).eq("code", Room.code); } catch (e) {} }
-    if (Room.channel) { try { await Room.channel.send({ type: "broadcast", event: "back_to_lobby", payload: {} }); } catch (e) {} }
+    broadcast("back_to_lobby", {}, 3);
     backToLobbyListeners.forEach(fn => { try { fn(); } catch (e) {} });
     return { ok: true };
   }
 
-  /* ---------- 선착순 정답 (직접 방송 + 결정적 동점처리) ----------
-     이전: 참가자→방장(claim)→방장→모두(winner) 왕복. 한쪽이라도 막히면 멈춤.
-     변경: 정답을 맞히면 본인이 곧장 'winner'를 방송하고, 본인 화면도 즉시 진행.
-           각 클라이언트는 문제별 첫 winner만 채택(중복 무시). 동시 정답은
-           타임스탬프(t)가 빠른 쪽, 같으면 id 사전순으로 결정 → 모두 같은 결론.
-     장점: 왕복이 없어 멈추지 않음. 방장 부재와도 무관.
-  --------------------------------------------------- */
-  // 내가 정답을 맞혔을 때(게임에서 호출)
-  function sendCorrect(index) {
-    const result = { index, winnerId: myId(), winnerName: Room.myName, t: Date.now() };
-    // 1) 내 화면 즉시 반영(멈춤 없음)
-    applyWinner(result);
-    // 2) 모두에게 방송(유실 대비 3회 반복, 블로킹 없음)
-    broadcastWinner(result);
-  }
-
-  // winner 결과를 여러 번 방송(유실 대비). result={index,winnerId,winnerName,t}
-  function broadcastWinner(result) {
-    let n = 0;
+  // 공통 방송 헬퍼: 유실 대비 n회 반복
+  function broadcast(event, payload, times) {
+    let n = 0; times = times || 1;
     const send = () => {
-      if (Room.channel) { try { Room.channel.send({ type: "broadcast", event: "vs_winner", payload: result }); } catch (e) {} }
-      if (++n < 3) setTimeout(send, 250);
+      if (Room.channel) { try { Room.channel.send({ type: "broadcast", event, payload }); } catch (e) {} }
+      if (++n < times) setTimeout(send, 200);
     };
     send();
-  }
-
-  // 승자 확정 신호 수신/적용: 문제별 첫 승자만 채택, 동시 정답은 (t, id)로 결정.
-  function applyWinner(result) {
-    if (!result || typeof result.index !== "number") return;
-    if (result.index < vsAppliedIndex) return;            // 지난 문제 → 무시
-    if (result.index === vsAppliedIndex) {
-      // 같은 문제에 대한 또 다른 정답 → 더 빠른(t) 쪽으로 결정(거의 없지만 일관성 위해)
-      const prev = vsDecidedWinner[result.index];
-      if (!prev) return;
-      const better = (result.t < prev.t) || (result.t === prev.t && String(result.winnerId) < String(prev.winnerId));
-      if (!better || prev.winnerId === result.winnerId) return;
-      // 더 이른 승자로 정정(점수만 살짝 보정; 화면 진행은 이미 됨)
-      vsDecidedWinner[result.index] = result;
-      if (window.VersusGame && typeof window.VersusGame.fixWinner === "function") {
-        window.VersusGame.fixWinner({ id: result.winnerId, name: result.winnerName }, prev.winnerId, result.index);
-      }
-      return;
-    }
-    // 새 문제의 첫 승자 확정
-    vsAppliedIndex = result.index;
-    vsDecidedWinner[result.index] = result;
-    if (window.VersusGame && typeof window.VersusGame.applyCorrect === "function") {
-      window.VersusGame.applyCorrect({ id: result.winnerId, name: result.winnerName }, result.index);
-    }
-  }
-
-  // 아무도 못 맞히고 문제 시간이 끝났을 때: 방장이 '승자 없음'을 방송(중복 무시됨)
-  function sendTimeout(index) {
-    if (!isHost()) return;
-    if (index < vsAppliedIndex || index === vsAppliedIndex) return; // 이미 처리/진행됨
-    const result = { index, winnerId: null, winnerName: null, t: Date.now() };
-    applyWinner(result);
-    broadcastWinner(result);
   }
 
   /* ---------- 수동 위임 ---------- */
@@ -490,7 +600,7 @@ const Versus = (() => {
     Room,
     makeCode, guestName, resolveMyName, myThemeLine, inviteLink, myId,
     createRoom, joinRoom, leaveRoom, transferHost, quickLeave, retrack,
-    updateSettings, startGame, onGameStart, sendCorrect, sendTimeout,
+    updateSettings, startGame, onGameStart, onState, sendAnswer,
     setTyping, backToLobby, onBackToLobby,
     onPlayersChange, onHostChange, getPlayers: () => Room.players,
     isHost, getHostId,

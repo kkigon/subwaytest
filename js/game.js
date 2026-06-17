@@ -176,128 +176,192 @@ function shuffle(arr) {
 function startVersusGame(config) {
   State.region = config.region || "seoul";
   State.mode = config.mode || "all";
-  State.playMode = "timed";        // 대전은 항상 시간제한 모드
+  State.playMode = "timed";
   State.versus = true;
   State.versusDuration = config.duration || 60;
 
   State.network = buildNetwork(config.lineIds, { displayLineIds: regionLineIds() });
   SubwayMap.render(State.network);
 
-  // 방장이 보내준 순서를 그대로 사용(없으면 로컬 셔플로 폴백)
   const validKeys = new Set(State.network.quizStations.keys());
   let order = Array.isArray(config.order) ? config.order.filter(k => validKeys.has(k)) : null;
   if (!order || order.length === 0) order = shuffle([...validKeys]);
   State.vsOrder = order;
-  State.vsIndex = 0;
-  State.vsLocked = false;
+  State.vsIndex = -1;          // 아직 첫 문제 표시 전
   State.vsScores = {};
-  State.vsAnsweredWrong = false;
-
+  State.vsLastWinner = null;
+  State.vsPhase = "countdown";
   State.score = 0;
+
   State.hintsLeft = HINTS_PER_GAME;
   State.playing = true;
   State.awaitingNext = false;
 
   $("#score").textContent = "0";
   $("#hint-count").textContent = State.hintsLeft;
-  $("#btn-hint").disabled = false;
+  $("#btn-hint").disabled = true;     // 대전에선 힌트 비활성(공정성)
   $("#hint-display").classList.remove("show");
 
-  // 대전 화면(대기실 등) 닫기
   document.body.classList.remove("in-versus");
   document.querySelectorAll(".vs-screen").forEach(s => s.classList.remove("show"));
-
   document.body.classList.add("in-game", "versus-mode");
   document.body.classList.remove("at-home", "at-end", "studying", "endless-mode");
 
-  // 게임 화면은 즉시 띄우되(지도 보임), 입력은 막고 3초 카운트다운 후 첫 문제 시작
   SubwayMap.setInteractive(false);
   $("#answer-input").disabled = true;
-  runVersusCountdown(() => {
-    if (!State.playing) return;
-    showQuestionByIndex(0);
-    State.endAt = performance.now() + State.versusDuration * 1000;
-    tickTimer();
-    SubwayMap.setInteractive(true);
-    $("#answer-input").disabled = false;
-    $("#answer-input").focus();
-    if (typeof window.onVersusScoreUpdate === "function") window.onVersusScoreUpdate();
-  });
+
+  // 카운트다운은 playAt(방장이 정한 절대시각)에 맞춰 표시 → 모두 동시
+  const playAt = config.playAt || (Date.now() + 3300);
+  runVersusCountdownUntil(playAt);
+
+  // 메인 타이머 표시 루프 시작(절대시각 기반). 종료 판정은 방장이 함.
+  startVersusDisplayTimer();
 }
 
-// 화면 중앙 3-2-1-시작! 카운트다운 후 콜백. 모두가 game_start 받고 각자 실행 → 거의 동시 시작.
-function runVersusCountdown(done) {
+// playAt(절대시각)까지 남은 시간으로 3-2-1-시작! 표시
+function runVersusCountdownUntil(playAt) {
   const box = $("#vs-countdown");
   const num = $("#vs-countdown-num");
-  if (!box || !num) { setTimeout(done, 100); return; }
+  if (!box || !num) return;
   box.classList.add("show");
-  const steps = ["3", "2", "1", "시작!"];
-  let i = 0;
-  const tick = () => {
-    const label = steps[i];
-    num.textContent = label;
-    num.classList.toggle("go", label === "시작!");
-    // 애니메이션 재시작 트릭
-    num.style.animation = "none"; void num.offsetWidth; num.style.animation = "";
-    i++;
-    if (i < steps.length) {
-      setTimeout(tick, 800);
-    } else {
-      setTimeout(() => { box.classList.remove("show"); done(); }, 650);
+  const render = () => {
+    if (!State.versus) { box.classList.remove("show"); return; }
+    const remainMs = playAt - Date.now();
+    if (remainMs <= 0) { box.classList.remove("show"); return; }
+    const label = remainMs > 2600 ? "3" : remainMs > 1700 ? "2" : remainMs > 800 ? "1" : "시작!";
+    if (num.textContent !== label) {
+      num.textContent = label;
+      num.classList.toggle("go", label === "시작!");
+      num.style.animation = "none"; void num.offsetWidth; num.style.animation = "";
     }
+    requestAnimationFrame(render);
   };
-  tick();
+  render();
 }
 
-// 특정 인덱스의 문제를 화면에 표시 (대전 모드 공용)
-function showQuestionByIndex(i) {
-  if (!State.playing) return;
-  if (i >= State.vsOrder.length) { endGame(); return; }
-  State.vsIndex = i;
-  State.vsLocked = false;
-  State.vsAnsweredWrong = false;
-  State.current = State.vsOrder[i];
-  State.awaitingNext = false;
-  renderCurrentQuestion();
-  const input = $("#answer-input");
-  input.value = "";
-  input.disabled = false;
-  input.focus();
-  startQuestionTimer(i);   // 문제별 10초 타이머
-}
-
-const VS_QUESTION_SECONDS = 10;   // 문제별 제한시간
-// 문제별 카운트다운. 0이 되면 (방장이) 시간초과를 모두에게 알림.
-function startQuestionTimer(index) {
-  clearQuestionTimer();
-  const badge = $("#vs-qtimer");
-  if (badge) { badge.classList.add("show"); badge.classList.remove("danger"); }
-  State.qEndAt = performance.now() + VS_QUESTION_SECONDS * 1000;
+// 메인 타이머 + 문제별 타이머 표시(절대시각 기반). 방장이 보낸 snapshot의 시각을 사용.
+function startVersusDisplayTimer() {
+  cancelAnimationFrame(State.timerFrame);
+  const timerEl = $("#timer");
+  const qBadge = $("#vs-qtimer");
   const loop = () => {
     if (!State.versus || !State.playing) return;
-    if (State.vsLocked || State.awaitingNext || State.vsIndex !== index) return; // 이미 정답/넘어감
-    const remain = Math.max(0, State.qEndAt - performance.now());
-    const s = Math.ceil(remain / 1000);
-    if (badge) { badge.textContent = s; badge.classList.toggle("danger", s <= 3); }
-    if (remain <= 0) {
-      // 시간초과: 방장만 모두에게 '승자 없음'을 알림(단일 권한)
-      if (typeof Versus !== "undefined" && Versus.isHost && Versus.isHost()) {
-        try { Versus.sendTimeout(index); } catch (e) {}
-      }
-      return;
+    const now = Date.now();
+    // 메인 타이머
+    if (State.vsGameEndsAt) {
+      const remain = Math.max(0, State.vsGameEndsAt - now);
+      const s = Math.ceil(remain / 1000);
+      const mm = Math.floor(s / 60), ss = s % 60;
+      timerEl.textContent = `${mm}:${String(ss).padStart(2, "0")}`;
+      timerEl.classList.toggle("danger", remain <= 10000);
     }
-    State.qTimerFrame = requestAnimationFrame(loop);
+    // 문제별 타이머(진행 중일 때만)
+    if (qBadge) {
+      if (State.vsPhase === "playing" && State.vsQEndsAt) {
+        const qr = Math.max(0, State.vsQEndsAt - now);
+        const qs = Math.ceil(qr / 1000);
+        qBadge.textContent = qs;
+        qBadge.classList.add("show");
+        qBadge.classList.toggle("danger", qr <= 3000);
+      } else {
+        qBadge.classList.remove("show");
+      }
+    }
+    State.timerFrame = requestAnimationFrame(loop);
   };
   loop();
 }
-function clearQuestionTimer() {
-  if (State.qTimerFrame) cancelAnimationFrame(State.qTimerFrame);
-  State.qTimerFrame = null;
+
+// ★ 핵심: 방장이 보낸 상태 스냅샷을 받아 화면을 그 상태로 맞춘다 (자가치유)
+function applyVersusState(snap) {
+  if (!State.versus || !snap) return;
+  State.vsGameEndsAt = snap.gameEndsAt;
+  State.vsQEndsAt = snap.qEndsAt;
+  State.vsScores = snap.scores || {};
+  State.vsPhase = snap.phase;
+
+  // 내 점수 상단 표시
+  const myVsId = (typeof Versus !== "undefined" && Versus.myId) ? Versus.myId() : null;
+  State.score = (myVsId && State.vsScores[myVsId]) || 0;
+  $("#score").textContent = State.score;
+
+  // 점수판/이름 갱신 (versus-ui가 snap.names도 활용)
+  State.vsNames = snap.names || {};
+  State.vsLastWinner = (snap.phase === "reveal" && snap.winnerId) ? snap.winnerId : null;
+  if (typeof window.onVersusScoreUpdate === "function") window.onVersusScoreUpdate();
+
+  // 게임 종료
+  if (snap.phase === "ended") {
+    if (!State._vsEnded) { State._vsEnded = true; endVersusFromState(snap); }
+    return;
+  }
+
+  // 문제 인덱스가 바뀌었으면 새 문제 렌더
+  if (typeof snap.index === "number" && snap.index !== State.vsIndex && snap.phase !== "countdown") {
+    State.vsIndex = snap.index;
+    State.current = State.vsOrder[snap.index];
+    if (State.current) {
+      renderCurrentQuestion();
+      const input = $("#answer-input");
+      input.value = "";
+      input.disabled = false;
+      State.answeredThisQ = false;
+      if (snap.phase === "playing") { SubwayMap.setInteractive(true); setTimeout(() => input.focus(), 50); }
+    }
+  }
+
+  // 정답 공개(reveal) 상태 반영
+  if (snap.phase === "reveal" && State.current) {
+    if (!State._revealedIndex || State._revealedIndex !== snap.index) {
+      State._revealedIndex = snap.index;
+      const st = State.network.stations.get(State.current);
+      $("#answer-input").disabled = true;
+      clearSuggestions();
+      if (snap.winnerId) {
+        SubwayMap.revealLabel(State.current, true);
+        Sound.play("correct");
+        popFeedback(`⭕ ${snap.winnerName} 정답! 「${st.name}」`, "ok");
+      } else {
+        SubwayMap.revealLabel(State.current, false);
+        Sound.play("wrong");
+        popFeedback(`⏱️ 시간 초과! 정답은 「${st.name}」`, "no");
+      }
+    }
+  } else if (snap.phase === "playing") {
+    State._revealedIndex = null;
+  }
 }
 
-// State.current 역으로 문제 UI(배지/문구/포커스)를 그린다 — nextQuestion과 공용 로직
+function endVersusFromState(snap) {
+  // 최종 순위 만들기 (방장 권위 점수 사용)
+  const scores = snap.scores || {};
+  const names = snap.names || {};
+  const players = (typeof Versus !== "undefined" && Versus.getPlayers) ? Versus.getPlayers() : [];
+  const nameMap = {}, themeMap = {};
+  players.forEach(p => { nameMap[p.id] = p.name; themeMap[p.id] = p.themeLine; });
+  Object.keys(names).forEach(id => { if (!nameMap[id]) { nameMap[id] = names[id].name; themeMap[id] = names[id].themeLine; } });
+  const ids = new Set([...Object.keys(scores), ...players.map(p => p.id)]);
+  const ranking = [...ids].map(id => ({
+    id, name: nameMap[id] || "(나간 참가자)", themeLine: themeMap[id] || null, score: scores[id] || 0,
+  })).sort((a, b) => b.score - a.score || String(a.name).localeCompare(String(b.name)));
+
+  State.playing = false;
+  State.versus = false;
+  cancelAnimationFrame(State.timerFrame);
+  SubwayMap.setInteractive(false); SubwayMap.hideFocus(); SubwayMap.fitAll();
+  document.body.classList.remove("in-game", "versus-mode");
+  const sb = $("#vs-scoreboard"); if (sb) sb.classList.remove("show");
+  const qb = $("#vs-qtimer"); if (qb) qb.classList.remove("show");
+
+  if (typeof window.onVersusGameEnd === "function") {
+    window.onVersusGameEnd({ ranking, myId: (typeof Versus !== "undefined" && Versus.myId) ? Versus.myId() : null });
+  }
+}
+
+// State.current 역으로 문제 UI(배지/문구/포커스)를 그린다
 function renderCurrentQuestion() {
   const st = State.network.stations.get(State.current);
+  if (!st) return;
   SubwayMap.focusStation(State.current);
   const badges = $("#question-lines");
   badges.innerHTML = "";
@@ -316,32 +380,29 @@ function renderCurrentQuestion() {
   clearSuggestions();
 }
 
-// 대전용 문제 순서 생성(방장이 호출). 주어진 노선으로 네트워크를 만들어 역 키를 섞는다.
+// 대전용 문제 순서 생성(방장이 호출)
 function buildVersusOrder(region, lineIds) {
   const prevRegion = State.region;
-  State.region = region;   // buildNetwork가 region에 의존하지 않지만 안전하게
+  State.region = region;
   const net = buildNetwork(lineIds, { displayLineIds: lineIds });
   State.region = prevRegion;
   return shuffle([...net.quizStations.keys()]);
 }
 
-// 대전: 입력 감지 → "입력중" presence 전파 (멈추면 1.2초 뒤 해제)
+// 대전: 입력 감지 → "입력중" presence 전파
 let _typingTimer = null;
 function onVersusTyping() {
   if (!State.versus || typeof Versus === "undefined" || !Versus.setTyping) return;
   const hasText = $("#answer-input").value.trim().length > 0;
   Versus.setTyping(hasText);
   if (_typingTimer) clearTimeout(_typingTimer);
-  if (hasText) {
-    // 일정 시간 입력이 없으면 자동으로 입력중 해제
-    _typingTimer = setTimeout(() => { try { Versus.setTyping(false); } catch (e) {} }, 1500);
-  }
+  if (hasText) _typingTimer = setTimeout(() => { try { Versus.setTyping(false); } catch (e) {} }, 1500);
 }
 
-/* ---------------- 대전: 정답 제출 / 선착순 처리 ---------------- */
-// 내가 답을 제출 (대전 모드)
+/* ---------------- 대전: 정답 제출 ---------------- */
+// 내가 답을 제출 (대전 모드) — 맞으면 방장에게 보고만 함. 진행은 스냅샷이 결정.
 function submitVersusAnswer() {
-  if (!State.playing || State.vsLocked || State.awaitingNext || !State.current) return;
+  if (!State.playing || State.vsPhase !== "playing" || !State.current) return;
   const input = $("#answer-input");
   const value = input.value.trim();
   if (!value) return;
@@ -349,67 +410,18 @@ function submitVersusAnswer() {
   const correct = matchesAnswer(value, st.name);
 
   if (!correct) {
-    // 오답: 나만 피드백, 계속 도전 가능(잠그지 않음)
     Sound.play("wrong");
     popFeedback("❌ 다시!", "no");
     input.select();
     return;
   }
-
-  // 정답! 점수는 바로 올리지 않고 '주장'만 보낸다. 방장이 첫 주장자를 확정해 알려줌.
+  // 정답: 방장에게 보고(중복 보고 방지). 점수/진행은 방장이 스냅샷으로 알려줌.
+  if (State.answeredThisQ) return;
+  State.answeredThisQ = true;
+  input.value = "";
+  popFeedback("✅ 제출!", "ok");
   if (typeof Versus !== "undefined" && Versus.setTyping) { try { Versus.setTyping(false); } catch (e) {} }
-  if (typeof window.onVersusCorrect === "function") {
-    window.onVersusCorrect({ index: State.vsIndex, station: State.current });
-  }
-}
-
-// 누군가의 정답이 확정됐을 때(자신 포함) — versus-ui에서 broadcast 수신 후 호출
-// winner: {id, name}  (id가 null이면 시간초과로 아무도 못 맞힘), index: 문제번호
-function versusApplyCorrect(winner, index) {
-  if (!State.playing) return;
-  if (index !== State.vsIndex) return;   // 지난 문제에 대한 신호면 무시
-  if (State.vsLocked) return;            // 이미 처리됨(두 번째 정답 무시)
-  State.vsLocked = true;
-  State.awaitingNext = true;
-  clearQuestionTimer();
-  const badge = $("#vs-qtimer"); if (badge) badge.classList.remove("show");
-
-  const input = $("#answer-input");
-  input.disabled = true;
-  clearSuggestions();
-
-  const st = State.network.stations.get(State.current);
-  const isTimeout = !winner || !winner.id;
-
-  if (!isTimeout) {
-    // 점수 집계 (승자만)
-    State.vsScores[winner.id] = (State.vsScores[winner.id] || 0) + 1;
-    State.vsLastWinner = winner.id;
-    const myVsId = (typeof Versus !== "undefined" && Versus.myId) ? Versus.myId() : null;
-    if (winner.id === myVsId) {
-      State.score = State.vsScores[winner.id];
-      $("#score").textContent = State.score;
-    }
-    SubwayMap.revealLabel(State.current, true);
-    Sound.play("correct");
-    popFeedback(`⭕ ${winner.name} 정답! 「${st.name}」`, "ok");
-  } else {
-    // 시간초과: 아무도 못 맞힘 → 정답 공개만
-    State.vsLastWinner = null;
-    SubwayMap.revealLabel(State.current, false);
-    Sound.play("wrong");
-    popFeedback(`⏱️ 시간 초과! 정답은 「${st.name}」`, "no");
-  }
-  // 상단 점수판 갱신(초록 반짝 포함)
-  if (typeof window.onVersusScoreUpdate === "function") window.onVersusScoreUpdate();
-
-  // 다음 문제로(모두 같은 인덱스로).
-  const remain = State.endAt - performance.now();
-  setTimeout(() => {
-    State.vsLastWinner = null;   // 반짝 효과는 잠깐만
-    if (remain <= 0) { endGame(); return; }
-    showQuestionByIndex(index + 1);
-  }, REVEAL_DELAY);
+  if (typeof Versus !== "undefined" && Versus.sendAnswer) { try { Versus.sendAnswer(State.vsIndex); } catch (e) {} }
 }
 
 /* ---------------- 타이머 ---------------- */
@@ -584,11 +596,10 @@ function clearSuggestions() {
   box.classList.remove("show");
 }
 
-/* ---------------- 종료 & 공유 ---------------- */
+/* ---------------- 종료 & 공유 (싱글플레이 전용; 대전은 endVersusFromState) ---------------- */
 function endGame() {
   State.playing = false;
   cancelAnimationFrame(State.timerFrame);
-  clearQuestionTimer();
   const qb = $("#vs-qtimer"); if (qb) qb.classList.remove("show");
   SubwayMap.setInteractive(false);
   SubwayMap.hideFocus();
@@ -596,7 +607,6 @@ function endGame() {
 
   $("#final-score").textContent = State.score;
   $("#final-message").textContent = scoreMessage(State.score);
-  // 엔딩 화면 라벨/단위를 모드에 맞게
   if (State.playMode === "endless") {
     $("#end-label").textContent = "🔥 연속 정답";
     $("#final-score-unit").textContent = "연속";
@@ -605,41 +615,18 @@ function endGame() {
     $("#final-score-unit").textContent = "역";
   }
 
-  document.body.classList.remove("in-game");
-  // 대전 모드는 일반 엔딩 대신 versus 결과 화면을 띄운다(아래 onVersusGameEnd)
-  if (!State.versus) document.body.classList.add("at-end");
-  document.body.classList.remove("versus-mode");
-  const sb = $("#vs-scoreboard"); if (sb) sb.classList.remove("show");
+  document.body.classList.remove("in-game", "versus-mode");
+  document.body.classList.add("at-end");
 
-  // 백엔드에 기록 저장 (시간제한 모드 + 로그인 상태일 때만; 훅이 내부에서 판단)
-  // 대전 모드 게임은 개인 랭킹에 저장하지 않는다.
-  if (!State.versus && typeof window.onPlayFinished === "function") {
+  // 백엔드 기록 저장 (시간제한 모드 + 로그인 상태일 때만; 훅이 내부 판단)
+  if (typeof window.onPlayFinished === "function") {
     window.onPlayFinished({
       score: State.score,
-      region: State.region,     // 'seoul' | 'busan'
-      mode: State.mode,         // 'core' | 'all' | 'custom'
-      modeLabel: modeLabel(),   // 사람이 읽는 라벨
-      playMode: State.playMode, // 'timed' | 'endless'
+      region: State.region,
+      mode: State.mode,
+      modeLabel: modeLabel(),
+      playMode: State.playMode,
     });
-  }
-
-  // 대전 모드였다면 최종 순위를 만들어 versus-ui에 전달
-  if (State.versus && typeof window.onVersusGameEnd === "function") {
-    const scores = State.vsScores || {};
-    // 접속자 이름/색 정보
-    const players = (typeof Versus !== "undefined" && Versus.getPlayers) ? Versus.getPlayers() : [];
-    const nameMap = {}, themeMap = {};
-    players.forEach(p => { nameMap[p.id] = p.name; themeMap[p.id] = p.themeLine; });
-    // 점수가 있는 사람 + 현재 접속자 전부 포함 (0점도 표시)
-    const ids = new Set([...Object.keys(scores), ...players.map(p => p.id)]);
-    const ranking = [...ids].map(id => ({
-      id,
-      name: nameMap[id] || "(나간 참가자)",
-      themeLine: themeMap[id] || null,
-      score: scores[id] || 0,
-    })).sort((a, b) => b.score - a.score || String(a.name).localeCompare(String(b.name)));
-    State.versus = false;
-    window.onVersusGameEnd({ ranking, myId: (typeof Versus !== "undefined" && Versus.myId) ? Versus.myId() : null });
   }
 }
 
@@ -875,10 +862,9 @@ document.addEventListener("DOMContentLoaded", () => {
 
 /* ---------------- 대전 모드 연동 (versus-ui.js에서 사용) ---------------- */
 window.VersusGame = {
-  start: startVersusGame,      // 모두가 호출: 같은 config로 게임 시작
-  buildOrder: buildVersusOrder, // 방장이 호출: 문제 순서 생성
-  applyCorrect: versusApplyCorrect, // 정답 확정 시(자신 포함) 호출
-  // 노선 범위(core/all/custom)와 지역으로 실제 출제 노선 id 배열을 계산
+  start: startVersusGame,        // 게임 시작(설정+순서로 화면 준비)
+  buildOrder: buildVersusOrder,  // 방장이 호출: 문제 순서 생성
+  applyState: applyVersusState,  // 방장 스냅샷 수신 → 화면 반영(자가치유)
   resolveLineIds(region, mode, customLines) {
     const lines = LINES.filter(l => (l.region || "seoul") === region);
     if (mode === "core") {
@@ -886,24 +872,10 @@ window.VersusGame = {
       return core.length ? core : lines.map(l => l.id);
     }
     if (mode === "custom" && customLines && customLines.length) return customLines.slice();
-    return lines.map(l => l.id); // all (부산은 core 없음 → all)
+    return lines.map(l => l.id);
   },
   isVersus: () => State.versus,
   currentIndex: () => State.vsIndex,
-  getScores: () => State.vsScores,            // {id: score}
-  lastWinnerId: () => State.vsLastWinner,     // 직전 문제 정답자(초록 반짝용)
-  // 동시 정답 정정(드묾): 잘못 준 점수를 빼고 올바른 승자에게 부여
-  fixWinner(correctWinner, wrongWinnerId, index) {
-    if (wrongWinnerId && State.vsScores[wrongWinnerId]) {
-      State.vsScores[wrongWinnerId] = Math.max(0, State.vsScores[wrongWinnerId] - 1);
-    }
-    State.vsScores[correctWinner.id] = (State.vsScores[correctWinner.id] || 0) + 1;
-    State.vsLastWinner = correctWinner.id;
-    const myVsId = (typeof Versus !== "undefined" && Versus.myId) ? Versus.myId() : null;
-    if (myVsId === correctWinner.id || myVsId === wrongWinnerId) {
-      State.score = State.vsScores[myVsId] || 0;
-      $("#score").textContent = State.score;
-    }
-    if (typeof window.onVersusScoreUpdate === "function") window.onVersusScoreUpdate();
-  },
+  getScores: () => State.vsScores,
+  lastWinnerId: () => State.vsLastWinner,
 };

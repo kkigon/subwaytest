@@ -378,16 +378,18 @@
     Versus.onPlayersChange(renderPlayers);
     // 방장 권한이 바뀌면 역할/설정 영역 갱신
     Versus.onHostChange(refreshRole);
-    // 게임 시작 신호 → 모두 같은 설정/문제로 게임 화면 진입
+    // 게임 시작 신호 → 모두 같은 설정/문제로 게임 화면 진입(카운트다운)
     Versus.onGameStart((cfg) => {
       if (window.VersusGame && typeof window.VersusGame.start === "function") {
         window.VersusGame.start(cfg);
       }
     });
-    // 게임(game.js)에서 내가 정답을 맞히면 호출 → 모두에게 선착순 정답 알림
-    window.onVersusCorrect = (info) => {
-      try { Versus.sendCorrect(info.index); } catch (e) {}
-    };
+    // ★ 방장 상태 스냅샷 → 화면에 반영(자가치유). 점수판도 함께 갱신됨.
+    Versus.onState((snap) => {
+      if (window.VersusGame && typeof window.VersusGame.applyState === "function") {
+        window.VersusGame.applyState(snap);
+      }
+    });
     // 점수 변동 시 상단 점수판 갱신
     window.onVersusScoreUpdate = renderScoreboard;
     // presence(입력중/접속) 변하면 점수판도 갱신
