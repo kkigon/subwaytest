@@ -911,13 +911,27 @@ body.modal-open { overflow: hidden; }
 .vs-seg-btn:hover { border-color: #c8cfdb; }
 .vs-seg-btn.active { background: var(--line-blue); border-color: var(--line-blue); color: #fff; }
 
-.vs-custom-lines { display: none; flex-wrap: wrap; gap: 6px; margin: 0 0 12px; }
-.vs-custom-lines.show { display: flex; }
-.vs-custom-lines .line-check {
-  display: inline-flex; align-items: center; gap: 5px;
-  padding: 4px 8px; border-radius: 999px; background: #f3f4f7; cursor: pointer; font-size: 12px;
+.vs-custom-lines {
+  display: none;
+  grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+  gap: 6px; margin: 0 0 12px;
+  max-height: 220px; overflow-y: auto;
+  text-align: left;
+  border: 1.5px dashed #d4d7de; border-radius: 14px; padding: 10px;
 }
-.vs-custom-lines .line-check input { margin: 0; }
+.vs-custom-lines.show { display: grid; }
+.vs-custom-lines .line-check {
+  display: flex; align-items: center; gap: 7px;
+  font-size: 13px; font-weight: 600;
+  padding: 5px 6px; border-radius: 10px; cursor: pointer;
+}
+.vs-custom-lines .line-check:hover { background: #f3f4f7; }
+.vs-custom-lines .line-check input { accent-color: var(--line-blue); width: 16px; height: 16px; margin: 0; flex: none; }
+.vs-custom-lines .line-chip { flex: none; }
+.vs-custom-lines .line-check-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+@media (max-width: 560px) {
+  .vs-custom-lines { grid-template-columns: repeat(2, 1fr); max-height: 180px; }
+}
 
 #vs-start-btn { margin-top: 6px; }
 
