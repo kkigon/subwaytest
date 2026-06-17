@@ -239,7 +239,6 @@ function runVersusCountdown(done) {
     num.classList.toggle("go", label === "시작!");
     // 애니메이션 재시작 트릭
     num.style.animation = "none"; void num.offsetWidth; num.style.animation = "";
-    try { Sound.play(label === "시작!" ? "correct" : "wrong"); } catch (e) {}
     i++;
     if (i < steps.length) {
       setTimeout(tick, 800);
@@ -893,4 +892,18 @@ window.VersusGame = {
   currentIndex: () => State.vsIndex,
   getScores: () => State.vsScores,            // {id: score}
   lastWinnerId: () => State.vsLastWinner,     // 직전 문제 정답자(초록 반짝용)
+  // 동시 정답 정정(드묾): 잘못 준 점수를 빼고 올바른 승자에게 부여
+  fixWinner(correctWinner, wrongWinnerId, index) {
+    if (wrongWinnerId && State.vsScores[wrongWinnerId]) {
+      State.vsScores[wrongWinnerId] = Math.max(0, State.vsScores[wrongWinnerId] - 1);
+    }
+    State.vsScores[correctWinner.id] = (State.vsScores[correctWinner.id] || 0) + 1;
+    State.vsLastWinner = correctWinner.id;
+    const myVsId = (typeof Versus !== "undefined" && Versus.myId) ? Versus.myId() : null;
+    if (myVsId === correctWinner.id || myVsId === wrongWinnerId) {
+      State.score = State.vsScores[myVsId] || 0;
+      $("#score").textContent = State.score;
+    }
+    if (typeof window.onVersusScoreUpdate === "function") window.onVersusScoreUpdate();
+  },
 };

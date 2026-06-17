@@ -200,10 +200,7 @@ const Versus = (() => {
     channel.on("broadcast", { event: "game_start" }, ({ payload }) => {
       if (payload) startGameFromSignal(payload);
     });
-    // 선착순 정답: 참가자의 '주장'은 방장만 처리, 확정된 '승자'는 모두 반영
-    channel.on("broadcast", { event: "vs_claim" }, ({ payload }) => {
-      if (payload && isHost()) judgeClaim(payload);
-    });
+    // 선착순 정답: 정답자가 직접 방송한 승자 결과를 모두 반영(문제별 첫 승자만 채택)
     channel.on("broadcast", { event: "vs_winner" }, ({ payload }) => {
       if (payload) applyWinner(payload);
     });
@@ -338,17 +335,15 @@ const Versus = (() => {
   // 게임 시작 신호 수신 시 모두가 실행 (방장 자신도 self:true로 받음)
   const gameStartListeners = [];
   let lastStartedAt = 0;
-  let vsDecidedWinner = {};   // (방장) index -> {id,name} 판정 기록
+  let vsDecidedWinner = {};   // index -> 채택된 승자 결과 {winnerId,winnerName,t}
   let vsAppliedIndex = -1;    // 내 화면에 이미 반영한 문제 번호
-  let claimRetryTimer = null; // 내 정답 주장 재전송 타이머
   function onGameStart(fn) { gameStartListeners.push(fn); }
   function startGameFromSignal(payload) {
     // 같은 시작 신호를 중복 처리하지 않도록 startedAt으로 디듀프
     if (payload && payload.startedAt && payload.startedAt === lastStartedAt) return;
     if (payload && payload.startedAt) lastStartedAt = payload.startedAt;
-    vsDecidedWinner = {};   // 방장 판정 기록 초기화
+    vsDecidedWinner = {};   // 승자 판정 기록 초기화
     vsAppliedIndex = -1;    // 내 반영 기록 초기화
-    if (claimRetryTimer) { clearInterval(claimRetryTimer); claimRetryTimer = null; }
     if (Room.data) Room.data.status = "playing";
     gameStartListeners.forEach(fn => { try { fn(payload); } catch (e) {} });
   }
@@ -392,75 +387,64 @@ const Versus = (() => {
     return { ok: true };
   }
 
-  /* ---------- 선착순 정답 (방장이 심판) ----------
-     문제: 각자 자기 정답을 로컬에서 바로 처리하면 동시 정답 시 둘 다 득점.
-     해결: 정답을 맞히면 '주장(claim)'만 보내고, 방장이 문제별 첫 주장자를
-           확정해 'winner'를 방송한다. 모두 winner 신호로만 점수/진행을 반영.
+  /* ---------- 선착순 정답 (직접 방송 + 결정적 동점처리) ----------
+     이전: 참가자→방장(claim)→방장→모두(winner) 왕복. 한쪽이라도 막히면 멈춤.
+     변경: 정답을 맞히면 본인이 곧장 'winner'를 방송하고, 본인 화면도 즉시 진행.
+           각 클라이언트는 문제별 첫 winner만 채택(중복 무시). 동시 정답은
+           타임스탬프(t)가 빠른 쪽, 같으면 id 사전순으로 결정 → 모두 같은 결론.
+     장점: 왕복이 없어 멈추지 않음. 방장 부재와도 무관.
   --------------------------------------------------- */
-  // 내가 정답을 맞혔을 때(게임에서 호출): 점수 올리지 말고 '주장'을 보낸다.
-  // 네트워크 유실 대비: winner 확정이 올 때까지 여러 번 재전송한다.
+  // 내가 정답을 맞혔을 때(게임에서 호출)
   function sendCorrect(index) {
-    const claim = { index, winnerId: myId(), winnerName: Room.myName, t: Date.now() };
-    if (isHost()) { judgeClaim(claim); return; }   // 방장이면 바로 판정
-
-    // 참가자: claim을 보내고, 이 문제의 winner가 확정될 때까지 재시도
-    let tries = 0;
-    const fire = () => {
-      // 이미 이 문제(또는 그 이후)가 반영됐으면 중단
-      if (index <= vsAppliedIndex) { if (claimRetryTimer) { clearInterval(claimRetryTimer); claimRetryTimer = null; } return; }
-      tries++;
-      if (Room.channel) { try { Room.channel.send({ type: "broadcast", event: "vs_claim", payload: claim }); } catch (e) {} }
-      if (tries >= 8) { if (claimRetryTimer) { clearInterval(claimRetryTimer); claimRetryTimer = null; } }
-    };
-    if (claimRetryTimer) clearInterval(claimRetryTimer);
-    fire();                                  // 즉시 1회
-    claimRetryTimer = setInterval(fire, 400); // 이후 0.4초 간격 재시도(최대 8회)
+    const result = { index, winnerId: myId(), winnerName: Room.myName, t: Date.now() };
+    // 1) 내 화면 즉시 반영(멈춤 없음)
+    applyWinner(result);
+    // 2) 모두에게 방송(유실 대비 3회 반복, 블로킹 없음)
+    broadcastWinner(result);
   }
 
-  // (방장 전용) 주장을 받아 문제별 첫 주장자만 승자로 확정 → 모두에게 방송
-  function judgeClaim(claim) {
-    if (!claim || typeof claim.index !== "number") return;
-    if (claim.index in vsDecidedWinner) {
-      // 이미 확정된 문제 → 재전송된 주장일 수 있으니 결과를 한 번 더 알려줌(유실 대비)
-      const w = vsDecidedWinner[claim.index];
-      rebroadcastWinner(claim.index, w);
-      return;
-    }
-    vsDecidedWinner[claim.index] = { id: claim.winnerId, name: claim.winnerName };
-    rebroadcastWinner(claim.index, vsDecidedWinner[claim.index]);
-    applyWinner({ index: claim.index, winnerId: claim.winnerId, winnerName: claim.winnerName });
-  }
-
-  // winner 결과를 여러 번 방송(유실 대비). w는 {id,name} 또는 null(시간초과)
-  function rebroadcastWinner(index, w) {
-    const result = { index, winnerId: w ? w.id : null, winnerName: w ? w.name : null };
+  // winner 결과를 여러 번 방송(유실 대비). result={index,winnerId,winnerName,t}
+  function broadcastWinner(result) {
     let n = 0;
     const send = () => {
       if (Room.channel) { try { Room.channel.send({ type: "broadcast", event: "vs_winner", payload: result }); } catch (e) {} }
-      if (++n < 3) setTimeout(send, 300);
+      if (++n < 3) setTimeout(send, 250);
     };
     send();
   }
 
-  // 승자 확정 신호 수신: 점수/진행을 반영(모두 공통). 같은 문제 중복 반영 방지.
+  // 승자 확정 신호 수신/적용: 문제별 첫 승자만 채택, 동시 정답은 (t, id)로 결정.
   function applyWinner(result) {
     if (!result || typeof result.index !== "number") return;
-    // 내가 보낸 claim 재시도 중지
-    if (claimRetryTimer) { clearInterval(claimRetryTimer); claimRetryTimer = null; }
-    if (result.index <= vsAppliedIndex) return;        // 이미 반영한 문제 → 무시
+    if (result.index < vsAppliedIndex) return;            // 지난 문제 → 무시
+    if (result.index === vsAppliedIndex) {
+      // 같은 문제에 대한 또 다른 정답 → 더 빠른(t) 쪽으로 결정(거의 없지만 일관성 위해)
+      const prev = vsDecidedWinner[result.index];
+      if (!prev) return;
+      const better = (result.t < prev.t) || (result.t === prev.t && String(result.winnerId) < String(prev.winnerId));
+      if (!better || prev.winnerId === result.winnerId) return;
+      // 더 이른 승자로 정정(점수만 살짝 보정; 화면 진행은 이미 됨)
+      vsDecidedWinner[result.index] = result;
+      if (window.VersusGame && typeof window.VersusGame.fixWinner === "function") {
+        window.VersusGame.fixWinner({ id: result.winnerId, name: result.winnerName }, prev.winnerId, result.index);
+      }
+      return;
+    }
+    // 새 문제의 첫 승자 확정
     vsAppliedIndex = result.index;
+    vsDecidedWinner[result.index] = result;
     if (window.VersusGame && typeof window.VersusGame.applyCorrect === "function") {
       window.VersusGame.applyCorrect({ id: result.winnerId, name: result.winnerName }, result.index);
     }
   }
 
-  // (방장 전용) 아무도 못 맞히고 문제 시간이 끝났을 때: 승자 없이 다음으로
+  // 아무도 못 맞히고 문제 시간이 끝났을 때: 방장이 '승자 없음'을 방송(중복 무시됨)
   function sendTimeout(index) {
     if (!isHost()) return;
-    if (index in vsDecidedWinner) return;              // 이미 승자 있음
-    vsDecidedWinner[index] = null;                     // 승자 없음으로 확정
-    rebroadcastWinner(index, null);
-    applyWinner({ index, winnerId: null, winnerName: null });
+    if (index < vsAppliedIndex || index === vsAppliedIndex) return; // 이미 처리/진행됨
+    const result = { index, winnerId: null, winnerName: null, t: Date.now() };
+    applyWinner(result);
+    broadcastWinner(result);
   }
 
   /* ---------- 수동 위임 ---------- */
