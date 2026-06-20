@@ -23,10 +23,11 @@ const Versus = (() => {
     code: null,
     myName: null,
     data: null,             // rooms 행 캐시
-    channel: null,          // presence + broadcast
+    channel: null,          // broadcast 전용(host_set / vs_state / typing). presence는 더 이상 안 씀
     dbChannel: null,        // rooms 행 Postgres Changes
     gsChannel: null,        // game_states 행 Postgres Changes(게임 상태 푸시)
-    players: [],            // [{id,name,themeLine,joinedAt}]
+    membersChannel: null,   // room_members 행 Postgres Changes(입장/퇴장 즉시 반영)
+    players: [],            // [{id,name,themeLine,joinedAt}] — DB(room_members)가 단일 진실
     hostId: null,           // 단일 진실: 현재 방장(rooms.host_id)
   };
 
@@ -36,7 +37,7 @@ const Versus = (() => {
   function onPlayersChange(fn) { playerListeners.push(fn); }
   function onHostChange(fn) { hostListeners.push(fn); }
   function onBackToLobby(fn) { backToLobbyListeners.push(fn); }
-  function notifyPlayers() { playerListeners.forEach(fn => { try { fn(Room.players); } catch (e) {} }); }
+  function notifyPlayers() { const list = withTyping(Room.players); playerListeners.forEach(fn => { try { fn(list); } catch (e) {} }); }
   let lastNotifiedHost = undefined;
   function notifyHostIfChanged() {
     if (Room.hostId !== lastNotifiedHost) {
@@ -88,46 +89,73 @@ const Versus = (() => {
   }
   function inviteLink(code) { return location.href.split("#")[0].split("?")[0] + "?room=" + code; }
 
-  /* ---------- presence → 참가자 배열 ---------- */
-  function buildPlayers(state) {
-    const list = [];
-    const seen = new Set();
-    for (const key in state) {
-      const metas = state[key];
-      if (!Array.isArray(metas) || metas.length === 0) continue;
-      // 같은 key에 메타 여러 개면 가장 최근(joinedAt 최대) 것만 → stale 방지
-      let m = metas[0];
-      for (const cand of metas) { if ((cand.joinedAt || 0) > (m.joinedAt || 0)) m = cand; }
-      if (!m || !m.id || !m.name) continue;
-      if (seen.has(m.id)) continue;
-      seen.add(m.id);
-      list.push(m);
-    }
-    // 방장(host_id) 먼저, 그다음 joinedAt 순
-    list.sort((a, b) => {
+  /* ---------- 참가자 목록(DB 단일 진실) ---------- */
+  // typing(입력중)은 가벼운 broadcast로만 주고받는다(DB에 쓰지 않음 → 깜빡임/부하 없음).
+  const typingIds = {};   // { player_id: true }
+  function withTyping(list) { return (list || []).map(p => Object.assign({}, p, { typing: !!typingIds[p.id] })); }
+
+  function sortPlayers(list) {
+    // 방장(host_id) 먼저, 그다음 합류 순
+    return [...list].sort((a, b) => {
       const ha = a.id === Room.hostId ? 1 : 0, hb = b.id === Room.hostId ? 1 : 0;
-      return (hb - ha) || (a.joinedAt - b.joinedAt) || String(a.name).localeCompare(String(b.name));
+      return (hb - ha) || (a.joinedAt - b.joinedAt) || String(a.name || "").localeCompare(String(b.name || ""));
     });
-    return list;
   }
-  let myTyping = false;
-  function myMeta() { return { id: myId(), name: Room.myName, themeLine: myThemeLine(), joinedAt: mySessionJoinedAt, typing: myTyping }; }
+  function samePlayerSet(a, b) {
+    if (a.length !== b.length) return false;
+    const ka = a.map(p => p.id + ":" + (p.name || "")).sort().join("|");
+    const kb = b.map(p => p.id + ":" + (p.name || "")).sort().join("|");
+    return ka === kb;
+  }
+
+  let membersInFlight = false;
+  // DB에서 현재 인원을 읽어와 목록 갱신(+TTL 지난 유령은 room_list가 청소).
+  async function refreshMembers() {
+    const c = client();
+    if (!c || !Room.code || membersInFlight) return;
+    membersInFlight = true;
+    try {
+      const { data, error } = await c.rpc("room_list", { p_room: Room.code });
+      if (!error && Array.isArray(data)) {
+        const next = sortPlayers(data.map(r => ({
+          id: r.player_id, name: r.name, themeLine: r.theme_line,
+          joinedAt: r.joined_at ? new Date(r.joined_at).getTime() : 0,
+        })));
+        const changed = !samePlayerSet(next, Room.players);
+        Room.players = next;
+        if (changed) notifyPlayers();      // 인원이 실제로 바뀐 경우만 다시 그림(깜빡임 방지)
+        scheduleHostCheck();               // 방장이 사라졌는지 점검
+      }
+    } catch (e) {}
+    membersInFlight = false;
+  }
+
   function hostPresent() { return !!Room.hostId && Room.players.some(p => p.id === Room.hostId); }
 
-  // 내 "입력중" 상태를 presence로 전파 (디바운스는 호출측에서)
+  // 내 "입력중" 상태를 broadcast로 전파 (디바운스는 호출측에서)
+  let myTyping = false;
   function setTyping(on) {
     on = !!on;
     if (on === myTyping) return;
     myTyping = on;
-    if (Room.channel) { try { Room.channel.track(myMeta()); } catch (e) {} }
+    if (Room.channel) { try { Room.channel.send({ type: "broadcast", event: "typing", payload: { id: myId(), on } }); } catch (e) {} }
   }
 
-  // presence 동기화 시
-  function handleSync() {
-    if (!Room.channel) return;
-    Room.players = buildPlayers(Room.channel.presenceState());
-    notifyPlayers();
-    scheduleHostCheck();   // 방장이 사라졌는지 유예 후 점검
+  /* ---------- 인원 하트비트 / 폴링 ---------- */
+  let memberHbTimer = null, memberPollTimer = null;
+  function startMembers() {
+    stopMembers();
+    // 살아있음 신호: last_seen 주기 갱신(끊기면 TTL로 자동 제거됨)
+    memberHbTimer = setInterval(() => {
+      const cc = client();
+      if (cc && Room.code) { try { cc.rpc("room_heartbeat", { p_room: Room.code, p_player: myId() }); } catch (e) {} }
+    }, 5000);
+    // 안전망 + 유령청소 트리거: 주기적으로 목록 재조회(room_list가 TTL 지난 행을 청소)
+    memberPollTimer = setInterval(refreshMembers, 3000);
+  }
+  function stopMembers() {
+    if (memberHbTimer) { clearInterval(memberHbTimer); memberHbTimer = null; }
+    if (memberPollTimer) { clearInterval(memberPollTimer); memberPollTimer = null; }
   }
 
   /* ---------- 방장 승계 워치독 ---------- */
@@ -183,11 +211,10 @@ const Versus = (() => {
 
     refreshJoinTime();
 
-    // broadcast self:true → 내가 보낸 host_set도 동일 경로로 처리(일관성)
+    // broadcast 전용 채널(host_set / vs_state / typing). 참가자 목록은 DB(room_members)로 관리.
     const channel = c.channel("room:" + Room.code, {
-      config: { presence: { key: myId() }, broadcast: { self: true } },
+      config: { broadcast: { self: true } },
     });
-    channel.on("presence", { event: "sync" }, handleSync);
     // 승계/위임 즉시 반영 — 이게 화면 갱신의 주 경로(브로드캐스트는 빠르고 안정적)
     channel.on("broadcast", { event: "host_set" }, ({ payload }) => {
       if (payload && payload.hostId) applyHost(payload.hostId, payload.hostName);
@@ -204,12 +231,16 @@ const Versus = (() => {
     channel.on("broadcast", { event: "vs_state" }, ({ payload }) => {
       if (payload && payload.snap) applyState(payload.snap);
     });
+    // 입력중 표시: 가벼운 broadcast로만 주고받음(DB 미사용)
+    channel.on("broadcast", { event: "typing" }, ({ payload }) => {
+      if (!payload || !payload.id) return;
+      if (payload.on) typingIds[payload.id] = true; else delete typingIds[payload.id];
+      notifyPlayers();
+    });
 
     Room.channel = channel;
     await new Promise((resolve) => {
-      channel.subscribe(async (status) => {
-        if (status === "SUBSCRIBED") { await channel.track(myMeta()); resolve(true); }
-      });
+      channel.subscribe((status) => { if (status === "SUBSCRIBED") resolve(true); });
       setTimeout(() => resolve(false), 5000);
     });
 
@@ -237,9 +268,27 @@ const Versus = (() => {
     Room.gsChannel = gsCh;
     await new Promise((resolve) => { gsCh.subscribe(() => resolve(true)); setTimeout(() => resolve(false), 5000); });
 
+    // ★ 방 인원(room_members) 실시간: 입장(INSERT)/퇴장·청소(DELETE) 즉시 반영.
+    //    하트비트(UPDATE)는 구독하지 않아 깜빡임이 없고, 변경만 즉시 들어온다.
+    const memCh = c.channel("members:" + Room.code);
+    memCh.on("postgres_changes",
+      { event: "INSERT", schema: "public", table: "room_members", filter: "room_code=eq." + Room.code },
+      () => refreshMembers());
+    memCh.on("postgres_changes",
+      { event: "DELETE", schema: "public", table: "room_members", filter: "room_code=eq." + Room.code },
+      () => refreshMembers());
+    Room.membersChannel = memCh;
+    await new Promise((resolve) => { memCh.subscribe(() => resolve(true)); setTimeout(() => resolve(false), 5000); });
+
     // 안전망: 주기적으로 DB의 host_id를 다시 읽어 화면을 자가 치유.
     // (Postgres Changes가 혹시 안 켜져 있어도 몇 초 안에 방장 표시가 맞춰짐)
     startReconciler();
+
+    // 입장 등록(DB에 내 행 추가) → 즉시 목록 갱신 → 하트비트/폴링 시작
+    Room.myName = resolveMyName();
+    try { await c.rpc("room_join", { p_room: Room.code, p_player: myId(), p_name: Room.myName, p_theme: myThemeLine() }); } catch (e) {}
+    await refreshMembers();
+    startMembers();
 
     // 입장 즉시 현재 게임 상태 따라잡기 + 시계/동기화 와처 가동(폴링 안전망 포함)
     syncNow();
@@ -267,9 +316,11 @@ const Versus = (() => {
   function stopReconciler() { if (reconcileTimer) { clearInterval(reconcileTimer); reconcileTimer = null; } }
 
   async function retrack() {
-    if (!Room.channel) return;
+    const c = client();
+    if (!c || !Room.code) return;
     Room.myName = resolveMyName();
-    try { await Room.channel.track(myMeta()); } catch (e) {}
+    try { await c.rpc("room_join", { p_room: Room.code, p_player: myId(), p_name: Room.myName, p_theme: myThemeLine() }); } catch (e) {}
+    refreshMembers();
   }
 
   async function disconnectChannel(keepList) {
@@ -277,14 +328,18 @@ const Versus = (() => {
     if (hostCheckTimer) { clearTimeout(hostCheckTimer); hostCheckTimer = null; }
     stopReconciler();
     stopWatcher();
-    // ★ 채널 해제를 '기다리지 않는다'. 참조를 즉시 끊고 실제 해제는 백그라운드로.
-    //   (untrack/removeChannel이 느리거나 멈춰도 나가기/재접속이 막히지 않게)
-    const ch = Room.channel, dbch = Room.dbChannel, gsch = Room.gsChannel;
-    Room.channel = null; Room.dbChannel = null; Room.gsChannel = null;
+    stopMembers();
+    // 실제 '나가기'일 때만 내 멤버 행 삭제 → 남들에게 즉시 사라짐.
+    // (연결 교체용 disconnectChannel(true)에서는 삭제하지 않음: 곧 다시 join하므로)
+    if (!keepList && c && Room.code) { try { c.rpc("room_leave", { p_room: Room.code, p_player: myId() }); } catch (e) {} }
+    // ★ 채널 해제를 '기다리지 않는다'. 참조를 즉시 끊고 실제 해제는 백그라운드로(행/멈춤 방지).
+    const ch = Room.channel, dbch = Room.dbChannel, gsch = Room.gsChannel, memch = Room.membersChannel;
+    Room.channel = null; Room.dbChannel = null; Room.gsChannel = null; Room.membersChannel = null;
     if (c) {
-      try { if (ch) { ch.untrack(); c.removeChannel(ch); } } catch (e) {}
+      try { if (ch) c.removeChannel(ch); } catch (e) {}
       try { if (dbch) c.removeChannel(dbch); } catch (e) {}
       try { if (gsch) c.removeChannel(gsch); } catch (e) {}
+      try { if (memch) c.removeChannel(memch); } catch (e) {}
     }
     if (!keepList) { Room.players = []; lastNotifiedHost = undefined; }
   }
@@ -628,8 +683,12 @@ const Versus = (() => {
     Room.code = null; Room.data = null; Room.players = []; Room.hostId = null; lastNotifiedHost = undefined;
   }
 
-  // 새로고침/창닫기 직전: presence에서 즉시 이탈. (방장이면 host_id는 DB에 남아 유예 동안 유지)
-  function quickLeave() { try { if (Room.channel) Room.channel.untrack(); } catch (e) {} }
+  // 새로고침/창닫기 직전: 내 멤버 행을 빼려 시도(best-effort). 못 빠져도 하트비트가 끊겨 TTL로 정리됨.
+  // (방장이면 host_id는 rooms에 남아 유예 동안 유지)
+  function quickLeave() {
+    const c = client();
+    try { if (c && Room.code) c.rpc("room_leave", { p_room: Room.code, p_player: myId() }); } catch (e) {}
+  }
 
   return {
     Room,
@@ -637,7 +696,7 @@ const Versus = (() => {
     createRoom, joinRoom, leaveRoom, transferHost, quickLeave, retrack,
     updateSettings, startGame, onGameStart, onState, sendAnswer,
     setTyping, backToLobby, onBackToLobby, forceEnd,
-    onPlayersChange, onHostChange, getPlayers: () => Room.players,
+    onPlayersChange, onHostChange, getPlayers: () => withTyping(Room.players),
     isHost, getHostId,
   };
 })();
