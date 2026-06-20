@@ -114,20 +114,38 @@ const Versus = (() => {
     const c = client();
     if (!c || !Room.code || membersInFlight) return;
     membersInFlight = true;
+    let next = null;
     try {
       const { data, error } = await c.rpc("room_list", { p_room: Room.code });
       if (!error && Array.isArray(data)) {
-        const next = sortPlayers(data.map(r => ({
+        next = data.map(r => ({
           id: r.player_id, name: r.name, themeLine: r.theme_line,
           joinedAt: r.joined_at ? new Date(r.joined_at).getTime() : 0,
-        })));
-        const changed = !samePlayerSet(next, Room.players);
-        Room.players = next;
-        if (changed) notifyPlayers();      // 인원이 실제로 바뀐 경우만 다시 그림(깜빡임 방지)
-        scheduleHostCheck();               // 방장이 사라졌는지 점검
+        }));
       }
     } catch (e) {}
     membersInFlight = false;
+    if (next === null) return;   // 조회 실패 시 기존 목록 유지(깜빡임/사라짐 방지)
+    // ★ 나 자신은 항상 목록에 포함한다. 내가 접속해 있는 건 확실하므로,
+    //   DB 반영 지연/누락이어도 방을 만든 본인(또는 누구든)이 안 보이는 일이 없다.
+    if (!next.some(p => p.id === myId())) {
+      next.push({ id: myId(), name: Room.myName || resolveMyName(), themeLine: myThemeLine(), joinedAt: Date.now() });
+    }
+    next = sortPlayers(next);
+    const changed = !samePlayerSet(next, Room.players);
+    Room.players = next;
+    if (changed) notifyPlayers();   // 인원이 실제로 바뀐 경우만 다시 그림(깜빡임 방지)
+    scheduleHostCheck();            // 방장이 사라졌는지 점검
+  }
+
+  // 내 정보를 목록에 즉시 반영(낙관적). DB 왕복 전이라도 본인이 바로 보이게.
+  function addSelfLocally() {
+    if (!Room.code) return;
+    if (Room.players.some(p => p.id === myId())) return;
+    Room.players = sortPlayers(Room.players.concat([{
+      id: myId(), name: Room.myName || resolveMyName(), themeLine: myThemeLine(), joinedAt: Date.now(),
+    }]));
+    notifyPlayers();
   }
 
   function hostPresent() { return !!Room.hostId && Room.players.some(p => p.id === Room.hostId); }
@@ -284,9 +302,10 @@ const Versus = (() => {
     // (Postgres Changes가 혹시 안 켜져 있어도 몇 초 안에 방장 표시가 맞춰짐)
     startReconciler();
 
-    // 입장 등록(DB에 내 행 추가) → 즉시 목록 갱신 → 하트비트/폴링 시작
+    // 입장 등록(DB에 내 행 추가) → 본인 즉시 표시 → 목록 갱신 → 하트비트/폴링 시작
     Room.myName = resolveMyName();
     try { await c.rpc("room_join", { p_room: Room.code, p_player: myId(), p_name: Room.myName, p_theme: myThemeLine() }); } catch (e) {}
+    addSelfLocally();        // DB 왕복 전이라도 본인은 바로 보이게(낙관적)
     await refreshMembers();
     startMembers();
 
