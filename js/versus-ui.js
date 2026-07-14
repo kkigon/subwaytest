@@ -28,6 +28,10 @@
       alert("대전 모드는 서버 연결이 필요해요. 잠시 후 다시 시도하거나 새로고침 해주세요.");
       return;
     }
+    if (Account.isReady && Account.isReady() && Account.isAvailable && !Account.isAvailable()) {
+      alert("Supabase에 연결하지 못했어요. Project URL과 Publishable key를 확인해주세요.");
+      return;
+    }
     $("#vs-entry-error").textContent = "";
     $("#vs-code-input").value = "";
     showScreen("#vs-entry-screen");
@@ -149,7 +153,8 @@
     const target = Versus.getPlayers().find(p => p.id === targetId);
     if (!target) return;
     if (!confirm(`'${target.name}'님에게 방장을 넘길까요?`)) return;
-    await Versus.transferHost(targetId);
+    const result = await Versus.transferHost(targetId);
+    if (!result.ok) alert(result.message || "방장을 넘기지 못했어요. 잠시 후 다시 시도해주세요.");
   }
 
   // 방장 권한이 바뀌면 대기실의 역할 표시/설정 영역을 갱신
@@ -372,12 +377,11 @@
     $("#vs-create-btn")?.addEventListener("click", doCreate);
     $("#vs-join-btn")?.addEventListener("click", () => doJoin());
 
-    // 새로고침/창닫기 직전: presence에서 빠르게 빠져 남은 사람들이 즉시 방장 승계하도록.
-    window.addEventListener("pagehide", () => { try { Versus.quickLeave(); } catch (e) {} });
-
-    // 탭이 다시 보이게 되면 fresh 데이터로 재track (stale presence/유령 사용자 방지)
-    document.addEventListener("visibilitychange", () => {
-      if (document.visibilityState === "visible") { try { Versus.retrack(); } catch (e) {} }
+    // pagehide에서 직접 퇴장시키지 않는다. bfcache나 모바일 앱 전환에도 발생해
+    // 실제로는 접속 중인 참가자가 계속 나갔다 들어오는 현상을 만들 수 있다.
+    // bfcache에서 돌아온 경우에만 현재 Presence payload를 다시 게시한다.
+    window.addEventListener("pageshow", event => {
+      if (event.persisted) { try { Versus.retrack(); } catch (e) {} }
     });
     // 로그인 상태가 바뀌면(프로필 로딩 완료 등) 방 안에 있을 때 내 표시 정보 갱신
     Account.onChange && Account.onChange(() => { try { Versus.retrack(); } catch (e) {} });
@@ -400,7 +404,7 @@
     });
     // 점수 변동 시 상단 점수판 갱신
     window.onVersusScoreUpdate = renderScoreboard;
-    // presence(입력중/접속) 변하면 점수판도 갱신
+    // Presence(입력중/접속) 변하면 점수판도 갱신
     Versus.onPlayersChange(() => { if (window.VersusGame && VersusGame.isVersus()) renderScoreboard(); });
     // 게임 종료 → 최종 순위 화면
     window.onVersusGameEnd = (data) => showResult(data);
