@@ -20,7 +20,7 @@ assert.match(game, /duration: State\.gameDuration/);
 assert.match(game, /const REVEAL_DELAY = 500/);
 assert.match(game, /theoreticalMax: theoreticalMaxScore/);
 assert.doesNotMatch(accountUi, /if \(duration !== 60\) return/);
-assert.match(accountUi, /Account\.allTimeRanking\(rankKey, rankDuration, 50\)/);
+assert.match(accountUi, /Account\.allTimeRanking\(rankKey, rankDuration, 100\)/);
 assert.doesNotMatch(accountUi, /nextResetText|이번 주/);
 
 const rankingDurations = Array.from(html.matchAll(/class="rank-duration-tab(?: active)?" type="button" data-duration="(\d+)"/g), match => Number(match[1]));
@@ -31,10 +31,13 @@ const migration = fs.readFileSync(path.join(root, "supabase", "time-based-rankin
 assert.match(backend, /duration_sec: duration/);
 assert.match(backend, /theoretical_max: theoreticalMax/);
 assert.match(backend, /all_time_ranking_by_duration/);
+assert.match(backend, /allTimeRanking\(mode, duration, limit = 100\)/);
 assert.doesNotMatch(backend, /nextResetText|weeklyRanking/);
 assert.match(migration, /duration_sec in \(10, 30, 60, 120, 300\)/);
 assert.match(migration, /set duration_sec = 60[\s\S]*where duration_sec is null/);
 assert.match(migration, /all_time_ranking_by_duration/);
+assert.match(migration, /p_limit integer default 100/);
+assert.match(migration, /coalesce\(p_limit, 100\), 100/);
 assert.doesNotMatch(migration, /date_trunc\('week'/);
 assert.doesNotMatch(migration, /create(?: or replace)? function public\.weekly_ranking/);
 assert.match(migration, /70 \* sqrt/);

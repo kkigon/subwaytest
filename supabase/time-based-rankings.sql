@@ -86,7 +86,7 @@ drop function if exists public.weekly_ranking(text, integer);
 create function public.all_time_ranking_by_duration(
   p_mode text,
   p_duration integer,
-  p_limit integer default 50
+  p_limit integer default 100
 )
 returns table (
   rank bigint,
@@ -150,7 +150,7 @@ as $$
     from fully_scored
     join public.profiles on profiles.id = fully_scored.user_id
    order by fully_scored.adjusted_score desc, fully_scored.best_score desc, fully_scored.first_played_at
-   limit greatest(1, least(coalesce(p_limit, 50), 100));
+   limit greatest(1, least(coalesce(p_limit, 100), 100));
 $$;
 
 revoke all on function public.all_time_ranking_by_duration(text, integer, integer) from public;

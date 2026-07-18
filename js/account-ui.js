@@ -273,7 +273,7 @@
     }
     // DB에는 region별 mode를 합쳐 "seoul:core" 같은 키로 저장한다.
     const rankKey = `${rankRegion}:${rankTab}`;
-    const rows = await Account.allTimeRanking(rankKey, rankDuration, 50);
+    const rows = await Account.allTimeRanking(rankKey, rankDuration, 100);
     const myId = Account.getProfile()?.id;
     if (rows.length === 0) {
       body.innerHTML = `<p class="muted">아직 기록이 없어요. 첫 주자가 되어보세요!</p>`;

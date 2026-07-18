@@ -194,7 +194,7 @@ const Account = (() => {
   }
 
   // 역대 랭킹 (지역+노선 범위+제한시간별)
-  async function allTimeRanking(mode, duration, limit = 50) {
+  async function allTimeRanking(mode, duration, limit = 100) {
     if (!client) return [];
     const { data, error } = await client.rpc("all_time_ranking_by_duration", {
       p_mode: mode,
