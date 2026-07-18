@@ -816,10 +816,11 @@ body.modal-open { overflow: hidden; }
    지역 선택 — 홈 화면 & 랭킹 모달
    ============================================================ */
 .region-select {
-  display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 12px;
+  display: grid; grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 8px; margin-bottom: 12px;
 }
 .region-btn {
-  flex: 1 1 72px; font: inherit; font-size: 15px; font-weight: 800;
+  min-width: 0; font: inherit; font-size: 15px; font-weight: 800;
   background: #f3f4f7; color: var(--ink-soft);
   border: 2px solid transparent; border-radius: 14px;
   padding: 11px; cursor: pointer;
@@ -830,11 +831,15 @@ body.modal-open { overflow: hidden; }
   background: #fff; color: var(--line-blue);
   border-color: var(--line-blue);
 }
+.region-btn[data-region="nationwide"] { grid-column: 1 / -1; }
 
 /* 랭킹 모달 지역 탭 */
-.rank-region-tabs { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 8px; }
+.rank-region-tabs {
+  display: grid; grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 8px; margin-bottom: 8px;
+}
 .rank-region-tab {
-  flex: 1 1 72px; font: inherit; font-size: 14px; font-weight: 800;
+  min-width: 0; font: inherit; font-size: 14px; font-weight: 800;
   background: transparent; color: var(--ink-soft);
   border: 2px solid #e7e9ee; border-radius: 999px;
   padding: 8px; cursor: pointer; transition: all .2s;
@@ -842,6 +847,7 @@ body.modal-open { overflow: hidden; }
 .rank-region-tab.active {
   background: var(--ink); color: #fff; border-color: var(--ink);
 }
+.rank-region-tab[data-region="nationwide"] { grid-column: 1 / -1; }
 .rank-duration-tabs {
   display: grid; grid-template-columns: repeat(5, 1fr);
   gap: 6px; margin: 8px 0;

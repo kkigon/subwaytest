@@ -54,5 +54,20 @@ for (const region of Object.keys(REGION_LABELS)) {
   assert.ok(html.includes(`class="region-btn${region === "seoul" ? " active" : ""}" data-region="${region}"`));
   assert.ok(html.includes(`class="rank-region-tab${region === "seoul" ? " active" : ""}" type="button" data-region="${region}"`));
 }
+const menuRegionOrder = Array.from(
+  html.matchAll(/class="region-btn(?: active)?" data-region="([^"]+)"/g),
+  match => match[1],
+);
+const rankingRegionOrder = Array.from(
+  html.matchAll(/class="rank-region-tab(?: active)?" type="button" data-region="([^"]+)"/g),
+  match => match[1],
+);
+const visibleRegionOrder = ["seoul", "busan", "daegu", "daejeon", "gwangju", "nationwide"];
+assert.deepEqual(menuRegionOrder, visibleRegionOrder, "메인 메뉴의 전국 옵션은 두 번째 줄이어야 한다");
+assert.deepEqual(rankingRegionOrder, visibleRegionOrder, "랭킹 메뉴의 전국 옵션은 두 번째 줄이어야 한다");
+
+const css = fs.readFileSync(path.join(root, "css", "style.css"), "utf8");
+assert.match(css, /\.region-btn\[data-region="nationwide"\]\s*\{\s*grid-column:\s*1 \/ -1;/);
+assert.match(css, /\.rank-region-tab\[data-region="nationwide"\]\s*\{\s*grid-column:\s*1 \/ -1;/);
 assert.ok(html.includes('<script src="js/data-nationwide.js"></script>'));
 console.log("nationwide data tests: ok");
