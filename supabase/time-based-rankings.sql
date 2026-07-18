@@ -1,7 +1,8 @@
 -- ============================================================
--- 시간별 주간 랭킹 마이그레이션
+-- 시간별 역대 랭킹 마이그레이션
 -- - 기존 플레이는 60초 기록으로 보존
 -- - 10/30/60/120/300초 랭킹을 각각 분리 집계
+-- - 날짜 제한 없이 전체 기간의 최고 기록을 집계
 -- - 기록 70점 + 백분위 30점, 분야별 이론 최고점 100점
 -- - 여러 번 실행해도 안전
 -- ============================================================
@@ -46,6 +47,7 @@ update public.plays
 alter table public.plays
   alter column duration_sec set default 60,
   alter column duration_sec set not null,
+  alter column theoretical_max set default 64,
   alter column theoretical_max set not null;
 
 do $$
@@ -71,13 +73,17 @@ begin
 end;
 $$;
 
-create index if not exists plays_weekly_duration_rank_idx
-  on public.plays (rank_mode, duration_sec, created_at, user_id, score desc);
+drop index if exists public.plays_weekly_duration_rank_idx;
+
+create index if not exists plays_duration_rank_idx
+  on public.plays (rank_mode, duration_sec, user_id, score desc, created_at);
 
 -- 반환 컬럼이 확장될 수 있도록 이전 버전 함수를 먼저 제거한다.
+drop function if exists public.all_time_ranking_by_duration(text, integer, integer);
 drop function if exists public.weekly_ranking_by_duration(text, integer, integer);
+drop function if exists public.weekly_ranking(text, integer);
 
-create or replace function public.weekly_ranking_by_duration(
+create function public.all_time_ranking_by_duration(
   p_mode text,
   p_duration integer,
   p_limit integer default 50
@@ -107,9 +113,6 @@ as $$
       from public.plays
      where plays.rank_mode = p_mode
        and plays.duration_sec = p_duration
-       and plays.created_at >= (
-         date_trunc('week', now() at time zone 'UTC') at time zone 'UTC'
-       )
      order by plays.user_id,
               (plays.score::numeric / plays.theoretical_max) desc,
               plays.score desc,
@@ -150,7 +153,9 @@ as $$
    limit greatest(1, least(coalesce(p_limit, 50), 100));
 $$;
 
-revoke all on function public.weekly_ranking_by_duration(text, integer, integer) from public;
-grant execute on function public.weekly_ranking_by_duration(text, integer, integer) to anon, authenticated;
+revoke all on function public.all_time_ranking_by_duration(text, integer, integer) from public;
+grant execute on function public.all_time_ranking_by_duration(text, integer, integer) to anon, authenticated;
+
+notify pgrst, 'reload schema';
 
 commit;

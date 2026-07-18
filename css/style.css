@@ -713,7 +713,6 @@ body.modal-open { overflow: hidden; }
 .theme-swatch.selected .theme-name { color: var(--ink); }
 
 /* ---------------- 랭킹 ---------------- */
-.rank-reset { text-align: center; font-size: 13px; font-weight: 700; color: var(--ink-soft); margin-bottom: 14px; }
 .rank-tabs { display: flex; gap: 8px; margin-bottom: 10px; }
 .rank-tab {
   flex: 1; font: inherit; font-size: 14px; font-weight: 800;

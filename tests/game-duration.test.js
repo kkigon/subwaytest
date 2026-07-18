@@ -14,12 +14,14 @@ const versus = Array.from(html.matchAll(/class="vs-seg-btn(?: active)?" data-dur
 
 assert.deepEqual(singlePlayer, expected, "싱글플레이 시간 옵션");
 assert.deepEqual(versus, expected, "대전 모드 시간 옵션");
+assert.doesNotMatch(html, /주간 랭킹|ranking-reset|후 리셋/);
 assert.match(game, /State\.gameDuration \* 1000/);
 assert.match(game, /duration: State\.gameDuration/);
 assert.match(game, /const REVEAL_DELAY = 500/);
 assert.match(game, /theoreticalMax: theoreticalMaxScore/);
 assert.doesNotMatch(accountUi, /if \(duration !== 60\) return/);
-assert.match(accountUi, /Account\.weeklyRanking\(rankKey, rankDuration, 50\)/);
+assert.match(accountUi, /Account\.allTimeRanking\(rankKey, rankDuration, 50\)/);
+assert.doesNotMatch(accountUi, /nextResetText|이번 주/);
 
 const rankingDurations = Array.from(html.matchAll(/class="rank-duration-tab(?: active)?" type="button" data-duration="(\d+)"/g), match => Number(match[1]));
 assert.deepEqual(rankingDurations, expected, "랭킹 시간 탭");
@@ -28,8 +30,13 @@ const backend = fs.readFileSync(path.join(root, "js", "backend.js"), "utf8");
 const migration = fs.readFileSync(path.join(root, "supabase", "time-based-rankings.sql"), "utf8");
 assert.match(backend, /duration_sec: duration/);
 assert.match(backend, /theoretical_max: theoreticalMax/);
-assert.match(backend, /weekly_ranking_by_duration/);
+assert.match(backend, /all_time_ranking_by_duration/);
+assert.doesNotMatch(backend, /nextResetText|weeklyRanking/);
 assert.match(migration, /duration_sec in \(10, 30, 60, 120, 300\)/);
+assert.match(migration, /set duration_sec = 60[\s\S]*where duration_sec is null/);
+assert.match(migration, /all_time_ranking_by_duration/);
+assert.doesNotMatch(migration, /date_trunc\('week'/);
+assert.doesNotMatch(migration, /create(?: or replace)? function public\.weekly_ranking/);
 assert.match(migration, /70 \* sqrt/);
 assert.match(migration, /30 \* \(percent_rank/);
 

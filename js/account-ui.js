@@ -229,7 +229,6 @@
 
   async function openRanking() {
     openModal("#ranking-modal");
-    $("#ranking-reset").textContent = "⏳ " + Account.nextResetText();
     // 게임에서 현재 선택한 지역으로 시작 (없으면 수도권)
     const cur = (typeof State !== "undefined" && State.region) ? State.region : "seoul";
     const duration = (typeof State !== "undefined" && [10, 30, 60, 120, 300].includes(State.gameDuration))
@@ -274,10 +273,10 @@
     }
     // DB에는 region별 mode를 합쳐 "seoul:core" 같은 키로 저장한다.
     const rankKey = `${rankRegion}:${rankTab}`;
-    const rows = await Account.weeklyRanking(rankKey, rankDuration, 50);
+    const rows = await Account.allTimeRanking(rankKey, rankDuration, 50);
     const myId = Account.getProfile()?.id;
     if (rows.length === 0) {
-      body.innerHTML = `<p class="muted">이번 주 기록이 아직 없어요. 첫 주자가 되어보세요!</p>`;
+      body.innerHTML = `<p class="muted">아직 기록이 없어요. 첫 주자가 되어보세요!</p>`;
       return;
     }
     body.innerHTML = rows.map(r => {

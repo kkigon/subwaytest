@@ -193,32 +193,16 @@ const Account = (() => {
     return best; // { "seoul:core:60": 23, "busan:all:30": 12, ... } 형태
   }
 
-  // 주간 랭킹 (지역+노선 범위+제한시간별)
-  async function weeklyRanking(mode, duration, limit = 50) {
+  // 역대 랭킹 (지역+노선 범위+제한시간별)
+  async function allTimeRanking(mode, duration, limit = 50) {
     if (!client) return [];
-    const { data, error } = await client.rpc("weekly_ranking_by_duration", {
+    const { data, error } = await client.rpc("all_time_ranking_by_duration", {
       p_mode: mode,
       p_duration: duration,
       p_limit: limit,
     });
     if (error) { console.warn("[Account] 랭킹 조회 실패", error.message); return []; }
     return data || [];
-  }
-
-  // 다음 주간 리셋까지 남은 시간(월요일 00:00 UTC 기준)
-  function nextResetText() {
-    const now = new Date();
-    // 이번 주 월요일 00:00 UTC
-    const day = now.getUTCDay(); // 0=일,1=월,...
-    const daysSinceMon = (day + 6) % 7;
-    const monday = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() - daysSinceMon, 0, 0, 0));
-    const nextMonday = new Date(monday.getTime() + 7 * 24 * 3600 * 1000);
-    const ms = nextMonday - now;
-    const d = Math.floor(ms / (24 * 3600 * 1000));
-    const h = Math.floor((ms % (24 * 3600 * 1000)) / (3600 * 1000));
-    if (d > 0) return `${d}일 ${h}시간 후 리셋`;
-    const m = Math.floor((ms % (3600 * 1000)) / (60 * 1000));
-    return `${h}시간 ${m}분 후 리셋`;
   }
 
   return {
@@ -234,6 +218,6 @@ const Account = (() => {
     getClient: () => client,          // 대전 모드(Realtime)에서 사용
     signInWithGoogle, signOut,
     createProfile, updateThemeLine, updateNickname,
-    savePlay, myPlays, myBest, weeklyRanking, nextResetText,
+    savePlay, myPlays, myBest, allTimeRanking,
   };
 })();
