@@ -727,7 +727,7 @@ body.modal-open { overflow: hidden; }
   padding: 9px 12px; border-radius: 12px; background: #f7f8fa;
 }
 .rank-row.mine { background: color-mix(in srgb, var(--line-blue) 12%, #fff); outline: 2px solid var(--line-blue); }
-.rank-num { font-size: 16px; font-weight: 800; min-width: 30px; text-align: center; }
+.rank-num { font-size: 20px; font-weight: 800; min-width: 54px; text-align: center; }
 .rank-nick { flex: 1; display: flex; }
 .rank-score { display: flex; flex-direction: column; align-items: flex-end; font-size: 18px; font-weight: 800; }
 .rank-score strong { white-space: nowrap; }

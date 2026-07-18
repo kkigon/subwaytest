@@ -284,7 +284,7 @@
       const achievement = scoreAchievement(r.adjusted_score);
       const placementHTML = placement
         ? `<span class="rank-placement rank-placement--${placement.key}" title="${placement.label}"><span aria-hidden="true">${placement.icon}</span><small>${placement.label}</small></span>`
-        : `<span class="rank-num">${r.rank}</span>`;
+        : `<span class="rank-num">${r.rank}위</span>`;
       const mine = myId && r.user_id === myId ? " mine" : "";
       const exceptional = achievement.key === "95" ? " score-exceptional" : "";
       return `<div class="rank-row${mine}${exceptional}">

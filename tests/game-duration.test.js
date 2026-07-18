@@ -64,5 +64,6 @@ assert.equal(scoringSandbox.api.scoreAchievement(94.9).key, "90");
 assert.equal(scoringSandbox.api.scoreAchievement(95).key, "95");
 
 assert.match(accountUi, /rank-placement--\$\{placement\.key\}/);
+assert.match(accountUi, /class="rank-num">\$\{r\.rank\}위/);
 assert.match(accountUi, /score-achievement--\$\{achievement\.key\}/);
 console.log("game duration tests: ok");
